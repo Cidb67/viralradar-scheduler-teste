@@ -1,0 +1,27 @@
+name: ViralRadar - Teste Scheduler Publico
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '13,43 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: viralradar-scheduler-teste
+  cancel-in-progress: false
+
+jobs:
+  verificar-agendador:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Confirmar ambiente e horario UTC
+        shell: bash
+        run: |
+          echo "ViralRadar scheduler - teste isolado"
+          echo "Evento: ${{ github.event_name }}"
+          echo "Horario UTC: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "Runner: $RUNNER_OS"
+          echo "SUCESSO: workflow publico executado sem acessar sistemas privados"
