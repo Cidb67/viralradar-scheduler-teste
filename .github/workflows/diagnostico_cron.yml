@@ -1,0 +1,31 @@
+name: ViralRadar - Diagnostico Cron Independente
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17,47 * * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Registrar evento e horario
+        shell: bash
+        env:
+          EVENTO: ${{ github.event_name }}
+          REPOSITORIO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "DIAGNOSTICO_VIRALRADAR"
+          echo "Evento=$EVENTO"
+          echo "Repositorio=$REPOSITORIO"
+          echo "UTC=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          if [ "$EVENTO" = "schedule" ]; then
+            echo "RESULTADO=CRON_AUTOMATICO_CONFIRMADO"
+          else
+            echo "RESULTADO=EXECUCAO_MANUAL_APENAS"
+          fi
