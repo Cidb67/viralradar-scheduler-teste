@@ -1,0 +1,94 @@
+name: Viral DNA - Teste completo OpenRouter
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validar-ideias:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Testar quatro ideias completas com dados sinteticos
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, sys, urllib.request, urllib.error
+          key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+          if not key:
+              sys.exit("Secret OPENROUTER_API_KEY ausente")
+          campos = ("titulo", "conceito", "gancho", "frase_thumbnail", "visual_thumbnail",
+                    "emocao_hipotese", "estrategia_editorial", "diferencial_original",
+                    "cuidados_verificacao", "gatilho_thumbnail", "prompt_thumbnail")
+          # IDs ficticios exclusivamente para teste de estrutura; nao representam videos reais.
+          ids = ["teste_video_a", "teste_video_b", "teste_video_c",
+                 "teste_video_d", "teste_video_e"]
+          prompt = (
+              "Voce e estrategista editorial. Crie EXATAMENTE 4 ideias distintas e originais "
+              "em portugues brasileiro sobre experimentos cientificos caseiros seguros. "
+              "Este e um TESTE com metadados inteiramente ficticios: nao trate fontes como videos reais "
+              "nem invente desempenho, CTR ou resultados. "
+              "Responda APENAS JSON: objeto com chave ideias, lista de 4 objetos. "
+              "Cada objeto deve ter todos os campos de texto: " + ", ".join(campos) +
+              "; e fontes_ids (lista de 1 a 3 IDs da lista permitida). "
+              "IDs permitidos: " + ", ".join(ids) + ". "
+              "Cada campo deve ter pelo menos 10 caracteres, titulo e frase_thumbnail pelo menos 5. "
+              "emocao_hipotese deve conter literalmente HIPÓTESE. "
+              "prompt_thumbnail deve descrever uma imagem 16:9, sem texto, letras, logos ou marca dagua, "
+              "com espaco para inserir texto depois. Nao use markdown."
+          )
+          payload = {"model":"openrouter/free",
+                     "messages":[{"role":"user","content":prompt}],
+                     "temperature":0.2,"max_tokens":3200}
+          req = urllib.request.Request(
+              "https://openrouter.ai/api/v1/chat/completions",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Authorization":"Bearer "+key,"Content-Type":"application/json",
+                       "X-Title":"ViralRadar - teste isolado DNA"},
+              method="POST")
+          try:
+              with urllib.request.urlopen(req, timeout=75) as response:
+                  data=json.load(response)
+          except urllib.error.HTTPError as e:
+              print("FALHA API: HTTP",e.code)
+              sys.exit(1)
+          except Exception as e:
+              print("FALHA REDE:",type(e).__name__)
+              sys.exit(1)
+          try:
+              choice=data["choices"][0]
+              content=choice["message"]["content"]
+              if not isinstance(content,str):
+                  raise ValueError("conteudo ausente")
+              content=content.strip()
+              if content.startswith("```"):
+                  content="\n".join(content.splitlines()[1:-1]).strip()
+              result=json.loads(content)
+              assert isinstance(result,dict) and set(result)=={"ideias"}
+              ideias=result["ideias"]
+              assert isinstance(ideias,list) and len(ideias)==4
+              titulos=set()
+              for ideia in ideias:
+                  assert isinstance(ideia,dict) and set(ideia)==set(campos)|{"fontes_ids"}
+                  for campo in campos:
+                      valor=ideia[campo]
+                      minimo=5 if campo in ("titulo","frase_thumbnail") else 10
+                      assert isinstance(valor,str) and minimo<=len(valor.strip())<=1000, campo
+                  assert "hipótese" in ideia["emocao_hipotese"].casefold()
+                  refs=ideia["fontes_ids"]
+                  assert isinstance(refs,list) and 1<=len(refs)<=3
+                  assert len(refs)==len(set(refs)) and all(x in ids for x in refs)
+                  titulos.add(ideia["titulo"].casefold())
+              assert len(titulos)==4
+          except (AssertionError, ValueError, KeyError, TypeError, IndexError) as e:
+              print("FALHA VALIDACAO:",type(e).__name__,str(e)[:90])
+              print("Motivo de parada:",data.get("choices",[{}])[0].get("finish_reason"))
+              sys.exit(1)
+          print("SUCESSO: 4 ideias completas, campos e fontes_ids validos.")
+          print("Modelo:",data.get("model","nao informado"))
+          print("Motivo de parada:",choice.get("finish_reason"))
+          print("Observacao: fontes sinteticas; nao prova qualidade editorial com videos reais.")
+          PY
