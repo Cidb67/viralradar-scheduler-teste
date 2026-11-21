@@ -1,0 +1,16 @@
+name: ViralRadar - Teste roteador 3 IAs
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testar-fallback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Baixar repositorio publico de testes
+        uses: actions/checkout@v4
+      - name: Simular falhas e validar roteamento
+        run: python -m unittest -v test_roteador_ia_isolado.py
