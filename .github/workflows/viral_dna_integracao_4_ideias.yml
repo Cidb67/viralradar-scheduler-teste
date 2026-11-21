@@ -1,0 +1,16 @@
+name: ViralRadar - Integracao roteador e 4 ideias
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  teste-integrado:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Baixar arquivos experimentais
+        uses: actions/checkout@v4
+      - name: Testar roteador e quatro ideias sem gastar tokens
+        run: python -m unittest -v test_viral_dna_integracao_isolada.py
