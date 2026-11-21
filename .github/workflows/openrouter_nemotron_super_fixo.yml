@@ -1,0 +1,91 @@
+name: Viral DNA - Nemotron Super fixo
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testar-modelo-fixo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Testar uma ideia com modelo fixo e diagnostico
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, json, sys, urllib.request, urllib.error
+          key=os.getenv("OPENROUTER_API_KEY","").strip()
+          if not key: sys.exit("Secret OPENROUTER_API_KEY ausente")
+          model="nvidia/nemotron-3.5-super-v1:free"
+          fields=["titulo","conceito","gancho","frase_thumbnail","visual_thumbnail",
+                  "emocao_hipotese","estrategia_editorial","diferencial_original",
+                  "cuidados_verificacao","gatilho_thumbnail","prompt_thumbnail"]
+          prompt=(
+              "Teste com referencias ficticias. Responda APENAS JSON, sem markdown: "
+              "objeto {ideias:[um objeto]}. Gere UMA ideia original sobre curiosidade astronomica "
+              "em portugues brasileiro. O objeto deve conter exatamente estes campos de texto: "+
+              ", ".join(fields)+
+              "; e fontes_ids, lista com 1 a 3 valores dentre teste_a, teste_b, teste_c. "
+              "Todos os textos devem ser concisos, com pelo menos 10 caracteres; "
+              "titulo e frase_thumbnail ao menos 5. "
+              "emocao_hipotese deve conter a palavra HIPÓTESE. "
+              "prompt_thumbnail deve descrever imagem 16:9 sem letras, logos ou marca dagua "
+              "e reservar espaco para texto adicionado posteriormente. "
+              "Nao afirme que as referencias sao videos reais. Nao invente metricas."
+          )
+          payload={"model":model,"messages":[{"role":"user","content":prompt}],
+                   "temperature":0.2,"max_tokens":3000}
+          request=urllib.request.Request(
+              "https://openrouter.ai/api/v1/chat/completions",
+              data=json.dumps(payload,ensure_ascii=False).encode(),
+              headers={"Authorization":"Bearer "+key,"Content-Type":"application/json",
+                       "X-Title":"ViralRadar teste modelo fixo"},method="POST")
+          try:
+              with urllib.request.urlopen(request,timeout=75) as response: data=json.load(response)
+          except urllib.error.HTTPError as exc:
+              print("HTTP:",exc.code)
+              sys.exit(1)
+          except Exception as exc:
+              print("Falha de rede:",type(exc).__name__)
+              sys.exit(1)
+          print("Modelo solicitado:",model)
+          print("Modelo retornado:",data.get("model","nao informado"))
+          try:
+              choice=data["choices"][0]
+              finish=choice.get("finish_reason")
+              usage=data.get("usage") or {}
+              print("Motivo de parada:",finish)
+              print("Tokens saida:",usage.get("completion_tokens","nao informado"))
+              details=usage.get("completion_tokens_details") or {}
+              print("Tokens raciocinio:",details.get("reasoning_tokens","nao informado"))
+              if finish!="stop": raise ValueError("resposta incompleta")
+              text=choice["message"].get("content")
+              if not isinstance(text,str): raise ValueError("texto ausente")
+              text=text.strip()
+              if text.startswith("```"): text="\n".join(text.splitlines()[1:-1]).strip()
+              result=json.loads(text)
+              if not isinstance(result,dict) or set(result)!={"ideias"}: raise ValueError("raiz invalida")
+              ideas=result["ideias"]
+              if not isinstance(ideas,list) or len(ideas)!=1: raise ValueError("quantidade invalida")
+              idea=ideas[0]
+              if not isinstance(idea,dict) or set(idea)!=set(fields)|{"fontes_ids"}:
+                  raise ValueError("campos incorretos")
+              for field in fields:
+                  value=idea[field]
+                  minimum=5 if field in ("titulo","frase_thumbnail") else 10
+                  if not isinstance(value,str) or not minimum<=len(value.strip())<=1000:
+                      raise ValueError("campo invalido: "+field)
+              if "hipótese" not in idea["emocao_hipotese"].casefold():
+                  raise ValueError("hipotese ausente")
+              ids=idea["fontes_ids"]
+              if not isinstance(ids,list) or not 1<=len(ids)<=3 or len(set(ids))!=len(ids) or any(x not in ("teste_a","teste_b","teste_c") for x in ids):
+                  raise ValueError("fontes invalidas")
+          except (ValueError,TypeError,KeyError,IndexError) as exc:
+              print("FALHA VALIDACAO:",type(exc).__name__,str(exc)[:120])
+              sys.exit(1)
+          print("SUCESSO: ideia completa validada com modelo fixo.")
+          print("Teste estrutural com fontes ficticias; nao mede qualidade editorial.")
+          PY
