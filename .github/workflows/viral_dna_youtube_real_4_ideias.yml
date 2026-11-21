@@ -1,0 +1,26 @@
+name: ViralRadar - 4 ideias com YouTube real
+on:
+  workflow_dispatch:
+    inputs:
+      canal:
+        description: "Canal publico do YouTube (ex.: @manualdomundo)"
+        required: true
+        default: "@manualdomundo"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  teste-real:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CANAL_TESTE: ${{ inputs.canal }}
+    steps:
+      - name: Baixar arquivos de teste
+        uses: actions/checkout@v4
+      - name: Coletar videos reais e gerar quatro ideias no OpenRouter
+        run: python viral_dna_4_ideias_youtube_real.py
