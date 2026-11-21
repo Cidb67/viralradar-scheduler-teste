@@ -1,0 +1,66 @@
+name: Diagnostico OpenRouter HTTP 400
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnosticar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Conferir catalogo e motivo do HTTP 400
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, json, sys, urllib.request, urllib.error
+          chave=os.environ.get("OPENROUTER_API_KEY","").strip()
+          if not chave: sys.exit("Secret OPENROUTER_API_KEY ausente")
+          modelo="nvidia/nemotron-3.5-super-v1:free"
+          try:
+              with urllib.request.urlopen("https://openrouter.ai/api/v1/models",timeout=20) as r:
+                  modelos=json.load(r).get("data",[])
+              print("Modelo fixo presente no catalogo:",any(m.get("id")==modelo for m in modelos))
+              similares=[m.get("id") for m in modelos if "nemotron-3.5" in m.get("id","").lower() and m.get("id","").endswith(":free")]
+              print("IDs Nemotron 3.5 gratuitos disponiveis:",similares[:12])
+          except Exception as exc:
+              print("Catalogo indisponivel:",type(exc).__name__)
+          dados={"model":modelo,"messages":[{"role":"user","content":"Responda apenas OK."}],
+                 "max_tokens":30}
+          req=urllib.request.Request(
+              "https://openrouter.ai/api/v1/chat/completions",
+              data=json.dumps(dados).encode("utf-8"),
+              headers={"Authorization":"Bearer "+chave,"Content-Type":"application/json",
+                       "X-Title":"ViralRadar diagnostico isolado"},method="POST")
+          try:
+              with urllib.request.urlopen(req,timeout=40) as resp:
+                  resultado=json.load(resp)
+              print("SUCESSO HTTP; modelo retornado:",resultado.get("model","nao informado"))
+              print("Motivo de parada:",resultado.get("choices",[{}])[0].get("finish_reason","nao informado"))
+          except urllib.error.HTTPError as exc:
+              print("HTTP:",exc.code)
+              try:
+                  corpo=json.loads(exc.read(4096).decode("utf-8","replace"))
+                  erro=corpo.get("error",{})
+                  print("Codigo API:",str(erro.get("code","nao informado"))[:60])
+                  # Imprimir somente categoria, sem mensagem bruta que possa conter dados sensiveis.
+                  mensagem=str(erro.get("message","")).lower()
+                  categorias={
+                      "modelo nao encontrado":("not found","invalid model","unknown model","does not exist"),
+                      "modelo indisponivel":("no endpoints","unavailable","not available"),
+                      "parametro invalido":("parameter","invalid request","max_tokens"),
+                      "limite ou quota":("limit","quota","credits"),
+                  }
+                  categoria=next((nome for nome,termos in categorias.items() if any(t in mensagem for t in termos)),"outro erro (mensagem omitida)")
+                  print("Categoria:",categoria)
+                  print("Tipo metadata:",str((erro.get("metadata") or {}).get("error_type","nao informado"))[:60])
+              except Exception:
+                  print("Resposta de erro nao interpretavel como JSON.")
+              sys.exit(1)
+          except Exception as exc:
+              print("Falha de conexao:",type(exc).__name__)
+              sys.exit(1)
+          PY
