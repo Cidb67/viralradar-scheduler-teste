@@ -1,0 +1,97 @@
+name: Viral DNA - 4 ideias Nemotron Super
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validar-quatro-ideias:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Gerar quatro ideias em dois lotes com modelo validado
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, json, sys, urllib.request, urllib.error
+          key=os.getenv("OPENROUTER_API_KEY","").strip()
+          if not key: sys.exit("Secret OPENROUTER_API_KEY ausente")
+          model="nvidia/nemotron-3.5-super-vl:free"
+          fields=("titulo","conceito","gancho","frase_thumbnail","visual_thumbnail",
+                  "emocao_hipotese","estrategia_editorial","diferencial_original",
+                  "cuidados_verificacao","gatilho_thumbnail","prompt_thumbnail")
+          ids=("teste_a","teste_b","teste_c")
+          titles=set()
+          all_ideas=[]
+          for lote, tema in ((1,"astronomia e fisica"),(2,"biologia e quimica seguras")):
+              prompt=(
+                  "TESTE com referencias FICTICIAS. Gere EXATAMENTE 2 ideias distintas e originais "
+                  "sobre "+tema+" em portugues brasileiro. Responda SOMENTE JSON valido, "
+                  "sem markdown, no formato de objeto com chave ideias, lista de 2 objetos. "
+                  "Cada ideia tem exatamente estes campos de texto: "+", ".join(fields)+
+                  "; e fontes_ids, lista de 1 a 3 strings dentre "+", ".join(ids)+". "
+                  "Todos os textos devem ser concisos, mas completos (minimo 10 caracteres; "
+                  "titulo e frase_thumbnail minimo 5). "
+                  "emocao_hipotese deve conter literalmente HIPÓTESE. "
+                  "prompt_thumbnail descreve imagem 16:9, sem texto, letras, logos ou marcas, "
+                  "com espaco para texto adicionado depois. "
+                  "Nao invente metricas nem trate as fontes ficticias como videos reais. "
+                  "Lote "+str(lote)+" de 2."
+              )
+              body={"model":model,"messages":[{"role":"user","content":prompt}],
+                    "temperature":0.2,"max_tokens":4500}
+              req=urllib.request.Request(
+                  "https://openrouter.ai/api/v1/chat/completions",
+                  data=json.dumps(body,ensure_ascii=False).encode("utf-8"),
+                  headers={"Authorization":"Bearer "+key,"Content-Type":"application/json",
+                           "X-Title":"ViralRadar teste quatro ideias"},method="POST")
+              try:
+                  with urllib.request.urlopen(req,timeout=95) as response:
+                      data=json.load(response)
+              except urllib.error.HTTPError as e:
+                  sys.exit("Lote %d: erro HTTP %d" % (lote,e.code))
+              except Exception as e:
+                  sys.exit("Lote %d: erro de rede %s" % (lote,type(e).__name__))
+              print("Lote",lote,"modelo:",data.get("model","nao informado"))
+              choice=data.get("choices",[{}])[0]
+              finish=choice.get("finish_reason")
+              usage=data.get("usage") or {}
+              print("Lote",lote,"parada:",finish,"saida:",usage.get("completion_tokens","nao informado"),
+                    "raciocinio:",(usage.get("completion_tokens_details") or {}).get("reasoning_tokens","nao informado"))
+              if finish!="stop": sys.exit("Lote %d: resposta truncada (%s)" % (lote,finish))
+              try:
+                  raw=choice["message"]["content"]
+                  if not isinstance(raw,str): raise ValueError("conteudo ausente")
+                  raw=raw.strip()
+                  if raw.startswith("```"): raw="\n".join(raw.splitlines()[1:-1]).strip()
+                  obj=json.loads(raw)
+                  if not isinstance(obj,dict) or set(obj)!={"ideias"}: raise ValueError("estrutura raiz")
+                  ideas=obj["ideias"]
+                  if not isinstance(ideas,list) or len(ideas)!=2: raise ValueError("quantidade")
+                  for idea in ideas:
+                      if not isinstance(idea,dict) or set(idea)!=set(fields)|{"fontes_ids"}:
+                          raise ValueError("campos")
+                      for field in fields:
+                          val=idea[field]
+                          minimum=5 if field in ("titulo","frase_thumbnail") else 10
+                          if not isinstance(val,str) or not minimum<=len(val.strip())<=1000:
+                              raise ValueError("campo "+field)
+                      if "hipótese" not in idea["emocao_hipotese"].casefold():
+                          raise ValueError("hipotese")
+                      refs=idea["fontes_ids"]
+                      if not isinstance(refs,list) or not 1<=len(refs)<=3 or len(refs)!=len(set(refs)) or any(x not in ids for x in refs):
+                          raise ValueError("fontes")
+                      title=idea["titulo"].strip().casefold()
+                      if title in titles: raise ValueError("titulo repetido")
+                      titles.add(title)
+                  all_ideas.extend(ideas)
+              except (ValueError,TypeError,KeyError,IndexError) as e:
+                  sys.exit("Lote %d: validacao falhou (%s: %s)" % (lote,type(e).__name__,str(e)[:100]))
+              print("Lote %d: duas ideias completas validadas." % lote)
+          if len(all_ideas)!=4 or len(titles)!=4: sys.exit("Quantidade final incorreta")
+          print("SUCESSO: 4 ideias completas, 11 campos e referencias por ideia, sem duplicatas.")
+          print("Dados sinteticos: qualidade editorial com videos reais nao testada.")
+          PY
