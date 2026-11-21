@@ -1,0 +1,19 @@
+name: ViralRadar - Diagnostico limites OpenRouter
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar sintaxe
+        run: python -m py_compile diagnostico_limites_openrouter.py
+      - name: Consultar limites sem gerar texto
+        run: python diagnostico_limites_openrouter.py
