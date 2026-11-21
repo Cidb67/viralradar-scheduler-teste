@@ -1,0 +1,21 @@
+name: ViralRadar - Teste seletor gratuito OpenRouter
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  teste-seletor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Baixar codigo isolado
+        uses: actions/checkout@v4
+      - name: Validar sintaxe sem consumir tokens
+        run: python -m py_compile viral_dna_free_router_teste.py viral_dna_4_ideias_youtube_real.py viral_dna_adaptadores_isolados.py
+      - name: Gerar uma ideia real com selecao automatica gratuita
+        run: python viral_dna_free_router_teste.py
