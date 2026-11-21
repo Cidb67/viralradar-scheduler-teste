@@ -1,0 +1,16 @@
+name: ViralRadar - Validar adaptadores DNA isolados
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testes-sem-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Baixar codigo de testes
+        uses: actions/checkout@v4
+      - name: Testar adaptadores sem credenciais e sem chamadas externas
+        run: python -m unittest -v test_viral_dna_adaptadores_isolados.py
