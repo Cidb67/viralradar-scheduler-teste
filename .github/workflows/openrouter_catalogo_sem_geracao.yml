@@ -1,0 +1,45 @@
+name: ViralRadar - Diagnostico catalogo sem API paga
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  comparar-modelos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Comparar identificadores e capacidades sem gerar texto
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, urllib.request, urllib.error
+          esperado="nvidia/nemotron-3.5-super-v1:free"
+          url="https://openrouter.ai/api/v1/models"
+          try:
+              with urllib.request.urlopen(url,timeout=20) as r:
+                  payload=json.load(r)
+          except Exception as exc:
+              raise SystemExit("Falha ao consultar catalogo: "+type(exc).__name__)
+          modelos=payload.get("data",[])
+          encontrados=[m for m in modelos if "nemotron-3.5" in str(m.get("id","")).lower() and str(m.get("id","")).endswith(":free")]
+          print("Identificador esperado:",repr(esperado))
+          print("Tamanho esperado:",len(esperado))
+          print("Correspondencia exata:",any(m.get("id")==esperado for m in modelos))
+          for m in encontrados:
+              atual=m["id"]
+              print("---")
+              print("Identificador catalogo:",repr(atual))
+              print("Comprimento:",len(atual))
+              print("Igual ao esperado:",atual==esperado)
+              if atual!=esperado:
+                  for i in range(max(len(atual),len(esperado))):
+                      a=ord(atual[i]) if i<len(atual) else None
+                      b=ord(esperado[i]) if i<len(esperado) else None
+                      if a!=b: print("Primeira diferenca no indice",i,"catalogo",a,"esperado",b);break
+              print("Saida maxima:",(m.get("top_provider") or {}).get("max_completion_tokens","nao informado"))
+              print("Parametros:",str(m.get("supported_parameters",[]))[:500])
+              print("Custo entrada:",(m.get("pricing") or {}).get("prompt","nao informado"))
+              print("Custo saida:",(m.get("pricing") or {}).get("completion","nao informado"))
+          print("Modelos examinados:",len(modelos))
+          print("Este diagnostico nao fez chamadas de geracao nem usou credenciais.")
+          PY
