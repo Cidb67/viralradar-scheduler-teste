@@ -1,0 +1,75 @@
+name: Teste isolado OpenRouter - ViralRadar
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testar-openrouter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Validar configuracao
+        shell: bash
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::Secret OPENROUTER_API_KEY ausente"
+            exit 1
+          fi
+      - name: Testar geracao real de quatro ideias
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, sys, urllib.request, urllib.error
+          key = os.environ["OPENROUTER_API_KEY"]
+          prompt = (
+              "Responda somente JSON valido: objeto com chave ideias, "
+              "lista de exatamente quatro objetos com campo titulo em portugues brasileiro. "
+              "Quatro ideias distintas e originais sobre curiosidades cientificas. "
+              "Sem markdown, sem texto fora do JSON."
+          )
+          payload = {
+              "model": "openrouter/free",
+              "messages": [{"role": "user", "content": prompt}],
+              "temperature": 0.2,
+              "max_tokens": 900,
+          }
+          req = urllib.request.Request(
+              "https://openrouter.ai/api/v1/chat/completions",
+              data=json.dumps(payload).encode(),
+              headers={"Authorization": "Bearer " + key,
+                       "Content-Type": "application/json",
+                       "X-Title": "ViralRadar - teste isolado"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=65) as resp:
+                  data = json.load(resp)
+          except urllib.error.HTTPError as e:
+              print("Falha HTTP do OpenRouter:", e.code)
+              sys.exit(1)
+          except Exception as e:
+              print("Falha de conexao:", type(e).__name__)
+              sys.exit(1)
+          try:
+              choice = data["choices"][0]
+              text = choice["message"]["content"].strip()
+              if text.startswith("```"):
+                  lines = text.splitlines()
+                  text = "\n".join(lines[1:-1]).strip()
+              result = json.loads(text)
+              ideias = result["ideias"]
+              assert isinstance(ideias, list) and len(ideias) == 4
+              assert all(isinstance(i, dict) and isinstance(i.get("titulo"), str) and i["titulo"].strip() for i in ideias)
+              assert len({i["titulo"].casefold() for i in ideias}) == 4
+          except (KeyError, IndexError, TypeError, ValueError, AssertionError) as e:
+              print("Resposta nao passou na validacao:", type(e).__name__)
+              print("Motivo de parada:", data.get("choices", [{}])[0].get("finish_reason", "desconhecido"))
+              sys.exit(1)
+          print("SUCESSO: OpenRouter retornou 4 ideias distintas em JSON valido.")
+          print("Modelo informado:", data.get("model", "nao informado"))
+          print("Motivo de parada:", choice.get("finish_reason", "nao informado"))
+          PY
