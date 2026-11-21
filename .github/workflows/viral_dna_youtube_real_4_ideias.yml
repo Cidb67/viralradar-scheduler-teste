@@ -22,5 +22,7 @@ jobs:
     steps:
       - name: Baixar arquivos de teste
         uses: actions/checkout@v4
+      - name: Validar sintaxe Python antes de usar APIs
+        run: python -m py_compile viral_dna_4_ideias_youtube_real.py viral_dna_adaptadores_isolados.py
       - name: Coletar videos reais e gerar quatro ideias no OpenRouter
         run: python viral_dna_4_ideias_youtube_real.py
