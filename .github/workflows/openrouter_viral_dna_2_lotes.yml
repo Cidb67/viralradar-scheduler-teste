@@ -1,0 +1,99 @@
+name: Viral DNA - OpenRouter em 2 lotes
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testar-dois-lotes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Gerar e validar dois lotes de duas ideias
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, sys, urllib.request, urllib.error
+          key = os.getenv("OPENROUTER_API_KEY", "").strip()
+          if not key:
+              sys.exit("Secret OPENROUTER_API_KEY ausente")
+          campos = ("titulo","conceito","gancho","frase_thumbnail","visual_thumbnail",
+                    "emocao_hipotese","estrategia_editorial","diferencial_original",
+                    "cuidados_verificacao","gatilho_thumbnail","prompt_thumbnail")
+          ids = ["teste_a","teste_b","teste_c","teste_d","teste_e"]
+          todas = []
+          titulos = set()
+          for lote in (1, 2):
+              prompt = (
+                  "Teste editorial com referencias FICTICIAS, nao afirme que sao videos reais. "
+                  "Responda SOMENTE JSON valido: objeto com unica chave ideias, lista de EXATAMENTE "
+                  "2 objetos. Cada objeto deve conter exatamente os campos de texto: " +
+                  ", ".join(campos) + "; e fontes_ids (lista de 1 a 3 strings dentre " +
+                  ", ".join(ids) + "). Ideias ORIGINAIS e DIFERENTES, portugues brasileiro, "
+                  "sobre curiosidades cientificas seguras. "
+                  "titulo e frase_thumbnail entre 5 e 80 caracteres; os outros campos de texto "
+                  "entre 15 e 180 caracteres, exceto prompt_thumbnail entre 160 e 420 caracteres. "
+                  "emocao_hipotese deve conter a palavra HIPÓTESE. "
+                  "prompt_thumbnail deve descrever imagem 16:9 sem texto nem logotipos, "
+                  "com espaco para texto posterior. Sem markdown. "
+                  "Lote " + str(lote) + " de 2. " +
+                  ("Foque em fisica e astronomia." if lote == 1 else
+                   "Foque em biologia e quimica, sem repetir ideias de fisica ou astronomia.")
+              )
+              payload = {"model":"openrouter/free",
+                         "messages":[{"role":"user","content":prompt}],
+                         "temperature":0.2,"max_tokens":2200}
+              req = urllib.request.Request(
+                  "https://openrouter.ai/api/v1/chat/completions",
+                  data=json.dumps(payload,ensure_ascii=False).encode("utf-8"),
+                  headers={"Authorization":"Bearer "+key,"Content-Type":"application/json",
+                           "X-Title":"ViralRadar teste DNA 2 lotes"},method="POST")
+              try:
+                  with urllib.request.urlopen(req,timeout=75) as response:
+                      data=json.load(response)
+              except urllib.error.HTTPError as e:
+                  sys.exit("Lote %d: HTTP %d" % (lote,e.code))
+              except Exception as e:
+                  sys.exit("Lote %d: falha de rede %s" % (lote,type(e).__name__))
+              try:
+                  escolha=data["choices"][0]
+                  motivo=escolha.get("finish_reason")
+                  if motivo != "stop":
+                      raise ValueError("termino "+str(motivo))
+                  bruto=escolha["message"]["content"].strip()
+                  if bruto.startswith("```"):
+                      bruto="\n".join(bruto.splitlines()[1:-1]).strip()
+                  resposta=json.loads(bruto)
+                  if not isinstance(resposta,dict) or set(resposta)!={"ideias"}:
+                      raise ValueError("estrutura raiz")
+                  ideias=resposta["ideias"]
+                  if not isinstance(ideias,list) or len(ideias)!=2:
+                      raise ValueError("quantidade de ideias")
+                  for ideia in ideias:
+                      if not isinstance(ideia,dict) or set(ideia)!=set(campos)|{"fontes_ids"}:
+                          raise ValueError("campos ausentes ou extras")
+                      for campo in campos:
+                          valor=ideia[campo]
+                          if not isinstance(valor,str) or not 5<=len(valor.strip())<=1000:
+                              raise ValueError("campo "+campo)
+                      if "hipótese" not in ideia["emocao_hipotese"].casefold():
+                          raise ValueError("hipotese ausente")
+                      fontes=ideia["fontes_ids"]
+                      if not isinstance(fontes,list) or not 1<=len(fontes)<=3 or len(set(fontes))!=len(fontes) or any(x not in ids for x in fontes):
+                          raise ValueError("referencias")
+                      titulo=ideia["titulo"].strip().casefold()
+                      if titulo in titulos:
+                          raise ValueError("titulo duplicado entre lotes")
+                      titulos.add(titulo)
+                  todas.extend(ideias)
+              except (ValueError,TypeError,KeyError,IndexError) as e:
+                  sys.exit("Lote %d: validacao falhou (%s: %s)" % (lote,type(e).__name__,str(e)[:100]))
+              print("Lote %d: 2 ideias completas validadas; modelo %s; parada %s" %
+                    (lote,data.get("model","desconhecido"),motivo))
+          assert len(todas)==4 and len(titulos)==4
+          print("SUCESSO: 4 ideias completas em dois lotes, JSON e campos validados.")
+          print("Dados sinteticos; nao comprova qualidade com videos reais.")
+          PY
