@@ -1,0 +1,109 @@
+name: ViralRadar - Fallback real OpenRouter
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validar-fallback-real:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Baixar roteador isolado
+        uses: actions/checkout@v4
+      - name: Simular duas falhas e chamar OpenRouter real
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, sys, urllib.request, urllib.error
+          from roteador_ia_isolado import executar, ProvedoresIndisponiveis
+          chave=os.getenv("OPENROUTER_API_KEY","").strip()
+          if not chave:
+              sys.exit("Secret OPENROUTER_API_KEY ausente")
+          modelo="nvidia/nemotron-3.5-super-vl:free"
+          campos=("titulo","conceito","gancho","frase_thumbnail","visual_thumbnail",
+                  "emocao_hipotese","estrategia_editorial","diferencial_original",
+                  "cuidados_verificacao","gatilho_thumbnail","prompt_thumbnail")
+          permitidos={"teste_a","teste_b","teste_c"}
+          chamadas=[]
+          def falha_simulada(nome):
+              def chamar():
+                  chamadas.append(nome)
+                  raise TimeoutError("Falha simulada")
+              return chamar
+          def openrouter():
+              chamadas.append("openrouter")
+              prompt=(
+                  "TESTE com referencias ficticias. Gere UMA ideia original sobre astronomia, "
+                  "em portugues brasileiro. Responda APENAS JSON, sem markdown, objeto com "
+                  "chave ideias contendo lista com exatamente UM objeto. "
+                  "O objeto deve conter todos estes campos de texto: "+", ".join(campos)+
+                  "; mais fontes_ids, lista de 1 a 3 strings dentre teste_a, teste_b, teste_c. "
+                  "Campos concisos, minimo 10 caracteres, exceto titulo e frase_thumbnail minimo 5. "
+                  "emocao_hipotese deve conter HIPÓTESE. prompt_thumbnail deve descrever "
+                  "imagem 16:9 sem texto, letras, logos ou marca dagua, reservando espaco "
+                  "para texto inserido posteriormente. Nao invente metricas nem apresente "
+                  "as referencias ficticias como videos reais."
+              )
+              payload={"model":modelo,"messages":[{"role":"user","content":prompt}],
+                       "temperature":0.2,"max_tokens":4500}
+              req=urllib.request.Request(
+                  "https://openrouter.ai/api/v1/chat/completions",
+                  data=json.dumps(payload,ensure_ascii=False).encode("utf-8"),
+                  headers={"Authorization":"Bearer "+chave,"Content-Type":"application/json",
+                           "X-Title":"ViralRadar fallback real isolado"},method="POST")
+              try:
+                  with urllib.request.urlopen(req,timeout=90) as resp:
+                      data=json.load(resp)
+              except urllib.error.HTTPError as e:
+                  raise RuntimeError("OpenRouter HTTP "+str(e.code)) from None
+              choice=data["choices"][0]
+              finish=choice.get("finish_reason")
+              usage=data.get("usage") or {}
+              print("Modelo retornado:",data.get("model","nao informado"))
+              print("Motivo de parada:",finish)
+              print("Tokens de saida:",usage.get("completion_tokens","nao informado"))
+              print("Tokens de raciocinio:",(usage.get("completion_tokens_details") or {}).get("reasoning_tokens","nao informado"))
+              if finish!="stop":
+                  raise ValueError("Resposta interrompida: "+str(finish))
+              bruto=choice["message"]["content"]
+              if not isinstance(bruto,str): raise ValueError("Conteudo ausente")
+              bruto=bruto.strip()
+              if bruto.startswith("```"):
+                  bruto="\n".join(bruto.splitlines()[1:-1]).strip()
+              return json.loads(bruto)
+          def validar(dados):
+              if not isinstance(dados,dict) or set(dados)!={"ideias"}: return False
+              ideias=dados["ideias"]
+              if not isinstance(ideias,list) or len(ideias)!=1: return False
+              ideia=ideias[0]
+              if not isinstance(ideia,dict) or set(ideia)!=set(campos)|{"fontes_ids"}: return False
+              for campo in campos:
+                  valor=ideia[campo]
+                  minimo=5 if campo in ("titulo","frase_thumbnail") else 10
+                  if not isinstance(valor,str) or not minimo<=len(valor.strip())<=1000: return False
+              if "hipótese" not in ideia["emocao_hipotese"].casefold(): return False
+              refs=ideia["fontes_ids"]
+              return (isinstance(refs,list) and 1<=len(refs)<=3 and
+                      all(isinstance(x,str) for x in refs) and len(set(refs))==len(refs)
+                      and all(x in permitidos for x in refs))
+          try:
+              resultado=executar({
+                  "groq":falha_simulada("groq"),
+                  "gemini":falha_simulada("gemini"),
+                  "openrouter":openrouter,
+              },validar)
+          except ProvedoresIndisponiveis as e:
+              print("FALHA: nenhum provedor produziu resposta valida")
+              print("Tentativas (sem dados sensiveis):",e.tentativas)
+              sys.exit(1)
+          assert resultado.provedor=="openrouter"
+          assert chamadas==["groq","gemini","openrouter"]
+          assert len(resultado.tentativas)==2
+          print("SUCESSO: Groq e Gemini simulados falharam; OpenRouter real assumiu.")
+          print("SUCESSO: JSON completo e 11 campos validados.")
+          print("Teste sintetico: nao demonstra qualidade editorial com videos reais.")
+          PY
