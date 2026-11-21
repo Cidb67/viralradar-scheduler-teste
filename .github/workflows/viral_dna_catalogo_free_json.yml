@@ -1,0 +1,17 @@
+name: ViralRadar - Catalogo modelos gratuitos JSON
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  catalogo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar sintaxe
+        run: python -m py_compile viral_dna_catalogo_free_json.py
+      - name: Inspecionar modelos sem gastar tokens
+        run: python viral_dna_catalogo_free_json.py
