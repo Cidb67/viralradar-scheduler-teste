@@ -1,0 +1,68 @@
+name: ViralRadar - Diagnostico seguro Meta Instagram
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnosticar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar requests
+        run: python -m pip install requests
+
+      - name: Diagnosticar API Meta sem exibir credenciais
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_BUSINESS_ACCOUNT_ID: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import requests
+
+          token = os.environ.get('INSTAGRAM_ACCESS_TOKEN', '').strip()
+          account_id = os.environ.get('INSTAGRAM_BUSINESS_ACCOUNT_ID', '').strip()
+          if not token or not re.fullmatch(r'\d{5,30}', account_id):
+              raise SystemExit('Configuracao Meta ausente ou ID em formato invalido')
+
+          fields = ('business_discovery.username(nike)'
+                    '{id,username,followers_count}')
+          try:
+              response = requests.get(
+                  'https://graph.facebook.com/v27.0/' + account_id,
+                  params={'fields': fields, 'access_token': token},
+                  timeout=25,
+              )
+          except requests.RequestException:
+              raise SystemExit('Falha de conexao com a API Meta (sem detalhes sensiveis)')
+
+          print('Meta HTTP status:', response.status_code)
+          try:
+              payload = response.json()
+          except ValueError:
+              raise SystemExit('Resposta Meta nao e JSON valido')
+
+          if response.ok:
+              data = payload.get('business_discovery')
+              if isinstance(data, dict) and data.get('id'):
+                  print('Business Discovery: consulta autorizada')
+              else:
+                  raise SystemExit('Business Discovery: dados esperados ausentes')
+          else:
+              err = payload.get('error') or {}
+              # Apenas codigo e subcodigo numericos: nunca mensagem, URL ou token.
+              code = err.get('code')
+              subcode = err.get('error_subcode')
+              print('Meta error code:', code if isinstance(code, int) else 'indisponivel')
+              print('Meta error subcode:', subcode if isinstance(subcode, int) else 'indisponivel')
+              raise SystemExit('Business Discovery: consulta recusada')
+          PY
