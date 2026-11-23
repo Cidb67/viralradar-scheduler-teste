@@ -1,0 +1,102 @@
+name: ViralRadar - Integracao real YouTube e Instagram
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: viralradar-integracao-real
+  cancel-in-progress: false
+
+jobs:
+  monitorar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Validar configuracao sem revelar segredos
+        env:
+          PRIVATE_REPO_READ_TOKEN: ${{ secrets.PRIVATE_REPO_READ_TOKEN }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DATABASE: ${{ secrets.SUPABASE_DATABASE }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_BUSINESS_ACCOUNT_ID: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          names = ('PRIVATE_REPO_READ_TOKEN', 'YOUTUBE_API_KEY',
+                   'SUPABASE_HOST', 'SUPABASE_PORT', 'SUPABASE_DATABASE',
+                   'SUPABASE_USER', 'SUPABASE_PASSWORD', 'TELEGRAM_BOT_TOKEN',
+                   'INSTAGRAM_ACCESS_TOKEN', 'INSTAGRAM_BUSINESS_ACCOUNT_ID')
+          missing = [name for name in names if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('Secrets ausentes: ' + ', '.join(missing))
+          print('Configuracao obrigatoria presente.')
+          PY
+
+      - name: Obter monitores originais do repositorio privado
+        uses: actions/checkout@v4
+        with:
+          repository: Cidb67/viralradar
+          token: ${{ secrets.PRIVATE_REPO_READ_TOKEN }}
+          path: monitores
+          persist-credentials: false
+          sparse-checkout: |
+            instagram_monitor.py
+            viralradar_monitor.py
+          sparse-checkout-cone-mode: false
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: python -m pip install requests psycopg2-binary
+
+      - name: Executar monitor real YouTube
+        id: youtube
+        continue-on-error: true
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DATABASE: ${{ secrets.SUPABASE_DATABASE }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python monitores/viralradar_monitor.py
+
+      - name: Executar monitor real Instagram
+        id: instagram
+        continue-on-error: true
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_BUSINESS_ACCOUNT_ID: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID }}
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DATABASE: ${{ secrets.SUPABASE_DATABASE }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python monitores/instagram_monitor.py
+
+      - name: Consolidar resultado dos dois monitores
+        if: always()
+        env:
+          YOUTUBE: ${{ steps.youtube.outcome }}
+          INSTAGRAM: ${{ steps.instagram.outcome }}
+        run: |
+          echo "Resultado YouTube: $YOUTUBE"
+          echo "Resultado Instagram: $INSTAGRAM"
+          if [ "$YOUTUBE" != "success" ] || [ "$INSTAGRAM" != "success" ]; then
+            echo "Falha em pelo menos um monitor."
+            exit 1
+          fi
+          echo "Ambos os monitores foram executados com sucesso."
