@@ -1,0 +1,68 @@
+name: ViralRadar - Validar token Meta
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install requests
+      - name: Verificar token e permissoes sem expor dados
+        env:
+          TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          ID_ATUAL: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID }}
+          ID_ALTERNATIVO: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID_ALTERNATIVO }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+          token = os.environ['TOKEN'].strip()
+          if not token:
+              raise SystemExit('Token ausente')
+          def consultar(label, host, path, fields=None):
+              params = {'access_token': token}
+              if fields:
+                  params['fields'] = fields
+              try:
+                  r = requests.get(host + path, params=params, timeout=20)
+                  p = r.json()
+              except (requests.RequestException, ValueError):
+                  print(label + ': falha de rede ou resposta invalida')
+                  return {}
+              e = p.get('error') or {}
+              print(label + ': HTTP ' + str(r.status_code))
+              if not r.ok:
+                  for key in ('code', 'error_subcode'):
+                      if isinstance(e.get(key), int):
+                          print(key + ': ' + str(e[key]))
+                  return {}
+              return p
+          fb = 'https://graph.facebook.com/v27.0/'
+          ig = 'https://graph.instagram.com/v27.0/'
+          me = consultar('Facebook /me', fb, 'me', 'id')
+          im = consultar('Instagram /me', ig, 'me', 'user_id,username')
+          if im:
+              for name in ('ID_ATUAL', 'ID_ALTERNATIVO'):
+                  print('Instagram /me corresponde a ' + name + ': ' +
+                        str(os.environ[name].strip() in [str(im.get('id','')), str(im.get('user_id',''))]))
+          if me:
+              perms = consultar('Facebook permissoes', fb, 'me/permissions')
+              granted = {x.get('permission') for x in perms.get('data', []) if x.get('status') == 'granted'}
+              for scope in ('instagram_basic', 'pages_read_engagement', 'pages_show_list', 'business_management'):
+                  print(scope + ': ' + ('concedida' if scope in granted else 'nao confirmada'))
+              pages = consultar('Facebook paginas vinculadas', fb, 'me/accounts', 'instagram_business_account{id}')
+              linked = {str(x.get('instagram_business_account', {}).get('id','')) for x in pages.get('data', [])}
+              for name in ('ID_ATUAL', 'ID_ALTERNATIVO'):
+                  print('Pagina vinculada corresponde a ' + name + ': ' + str(os.environ[name].strip() in linked))
+          if not me and not im:
+              raise SystemExit('Nenhum endpoint /me confirmou o token')
+          print('Diagnostico concluido; nao comprova Business Discovery.')
+          PY
