@@ -1,0 +1,62 @@
+name: ViralRadar - YouTube Principal Publico
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: viralradar-publico-youtube
+  cancel-in-progress: false
+
+jobs:
+  monitorar:
+    if: vars.VIRALRADAR_PUBLIC_MONITORS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Verificar configuracao obrigatoria sem exibir valores
+        env:
+          PRIVATE_REPO_READ_TOKEN: ${{ secrets.PRIVATE_REPO_READ_TOKEN }}
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DATABASE: ${{ secrets.SUPABASE_DATABASE }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        shell: bash
+        run: |
+          for key in PRIVATE_REPO_READ_TOKEN SUPABASE_HOST SUPABASE_PORT SUPABASE_DATABASE SUPABASE_USER SUPABASE_PASSWORD TELEGRAM_BOT_TOKEN YOUTUBE_API_KEY; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Configuracao ausente: $key"
+              exit 1
+            fi
+          done
+          echo "Configuracao presente; valores nao exibidos."
+      - name: Baixar somente os monitores do repositorio privado
+        uses: actions/checkout@v4
+        with:
+          repository: Cidb67/viralradar
+          ref: main
+          token: ${{ secrets.PRIVATE_REPO_READ_TOKEN }}
+          persist-credentials: false
+          path: codigo_privado
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependencias
+        run: python -m pip install requests psycopg2-binary
+      - name: Executar monitor youtube
+        working-directory: codigo_privado
+        env:
+          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DATABASE: ${{ secrets.SUPABASE_DATABASE }}
+          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: python viralradar_monitor.py
