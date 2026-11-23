@@ -1,0 +1,79 @@
+name: ViralRadar - Comparar IDs Instagram com seguranca
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  comparar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar requests
+        run: python -m pip install requests
+      - name: Comparar IDs sem revelar credenciais
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_BUSINESS_ACCOUNT_ID: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID }}
+          INSTAGRAM_BUSINESS_ACCOUNT_ID_ALTERNATIVO: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID_ALTERNATIVO }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import requests
+
+          token = os.environ.get('INSTAGRAM_ACCESS_TOKEN', '').strip()
+          ids = {
+              'ATUAL': os.environ.get('INSTAGRAM_BUSINESS_ACCOUNT_ID', '').strip(),
+              'ALTERNATIVO': os.environ.get('INSTAGRAM_BUSINESS_ACCOUNT_ID_ALTERNATIVO', '').strip(),
+          }
+          if not token:
+              raise SystemExit('Token Instagram ausente')
+          if any(not re.fullmatch(r'\d{5,30}', value) for value in ids.values()):
+              raise SystemExit('ID atual ou alternativo ausente ou em formato invalido')
+          if ids['ATUAL'] == ids['ALTERNATIVO']:
+              raise SystemExit('Os dois IDs cadastrados sao iguais; nao ha comparacao possivel')
+
+          resultados = {}
+          for rotulo, account_id in ids.items():
+              try:
+                  response = requests.get(
+                      'https://graph.facebook.com/v27.0/' + account_id,
+                      params={
+                          'fields': 'business_discovery.username(nike){id,username,followers_count}',
+                          'access_token': token,
+                      },
+                      timeout=25,
+                  )
+                  payload = response.json()
+              except (requests.RequestException, ValueError):
+                  print(rotulo + ': falha de rede ou resposta invalida')
+                  resultados[rotulo] = False
+                  continue
+              if response.ok and isinstance(payload.get('business_discovery'), dict) and payload['business_discovery'].get('id'):
+                  print(rotulo + ': SUCESSO Business Discovery (HTTP 200)')
+                  resultados[rotulo] = True
+              else:
+                  error = payload.get('error') or {}
+                  code = error.get('code')
+                  subcode = error.get('error_subcode')
+                  print(rotulo + ': falha HTTP ' + str(response.status_code)
+                        + ', codigo ' + str(code if isinstance(code, int) else 'indisponivel')
+                        + ', subcodigo ' + str(subcode if isinstance(subcode, int) else 'indisponivel'))
+                  resultados[rotulo] = False
+
+          if resultados['ALTERNATIVO'] and not resultados['ATUAL']:
+              print('CONCLUSAO: ID alternativo funciona; nao foi alterado nenhum Secret existente.')
+          elif resultados['ATUAL'] and not resultados['ALTERNATIVO']:
+              print('CONCLUSAO: ID atual funciona; nao foi alterado nenhum Secret existente.')
+          elif resultados['ATUAL'] and resultados['ALTERNATIVO']:
+              print('CONCLUSAO: ambos funcionam para Business Discovery.')
+          else:
+              raise SystemExit('CONCLUSAO: nenhum ID passou; investigar token, permissoes ou tipo de conta.')
+          PY
