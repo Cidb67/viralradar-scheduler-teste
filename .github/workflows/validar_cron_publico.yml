@@ -1,0 +1,38 @@
+name: ViralRadar - Validar agendamento publico
+
+on:
+  schedule:
+    - cron: '3,18,33,48 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: viralradar-validar-cron-publico
+  cancel-in-progress: false
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Registrar origem e horario da execucao
+        env:
+          EVENTO: ${{ github.event_name }}
+          REPOSITORIO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          EXECUCAO: ${{ github.run_id }}
+        run: |
+          echo "=== Diagnostico isolado de agendamento ==="
+          echo "Repositorio: $REPOSITORIO"
+          echo "Evento: $EVENTO"
+          echo "Branch: $BRANCH"
+          echo "Execucao: $EXECUCAO"
+          echo "Horario UTC: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          if [ "$EVENTO" = "schedule" ]; then
+            echo "SUCESSO: GitHub iniciou este workflow automaticamente pelo cron."
+          else
+            echo "Execucao manual: valida o workflow, mas NAO comprova o cron."
+          fi
+          echo "Nenhuma API externa ou segredo foi utilizado."
