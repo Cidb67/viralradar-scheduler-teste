@@ -1,0 +1,44 @@
+name: OpenRouter - Consumo DNA
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  medir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Medir DNA editorial
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, json, time, urllib.request, urllib.error
+          key = os.environ.get("OPENROUTER_API_KEY")
+          if not key:
+              raise SystemExit("Secret ausente")
+          temas = ["Buracos negros","Oceanos profundos","Vida em Marte","Energia solar","Memoria humana","Vulcoes","Dinossauros","Inteligencia animal","Viagem espacial","Sono","Auroras","Gravidade","Evolucao","Clima","Luas de Jupiter"]
+          videos = [{"titulo": t, "descricao": "Explicacao cientifica acessivel sobre "+t, "visualizacoes": 12000+i*3100, "duracao_segundos": 480+i*20} for i,t in enumerate(temas)]
+          prompt = "Analise estes 15 registros sinteticos de um canal. Gere JSON com publico, temas, padroes de titulos, ganchos, estrutura narrativa, tom, oportunidades e limitacoes. Nao invente dados ausentes. "+json.dumps(videos, ensure_ascii=False)
+          payload = {"model":"openrouter/free","messages":[{"role":"user","content":prompt}],"max_tokens":2500,"temperature":0.2}
+          req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions",data=json.dumps(payload).encode(),headers={"Authorization":"Bearer "+key,"Content-Type":"application/json","X-Title":"ViralRadar teste consumo"},method="POST")
+          start = time.monotonic()
+          try:
+              with urllib.request.urlopen(req, timeout=120) as response:
+                  data = json.load(response)
+          except urllib.error.HTTPError as e:
+              raise SystemExit("HTTP "+str(e.code))
+          elapsed = round(time.monotonic()-start,2)
+          print(json.dumps({"teste":"DNA sintetico 15 videos","requisicoes":1,"modelo":data.get("model"),"segundos":elapsed,"usage":data.get("usage")},ensure_ascii=False))
+          choice = data["choices"][0]
+          print("finish_reason:",choice.get("finish_reason"))
+          raw = choice["message"]["content"].strip()
+          if raw.startswith("```"):
+              raw = "\n".join(raw.splitlines()[1:-1])
+          result = json.loads(raw)
+          required = {"publico","temas","padroes de titulos","ganchos","estrutura narrativa","tom","oportunidades","limitacoes"}
+          normalized = {k.lower().replace("_"," ") for k in result}
+          print("Campos presentes:",len(required & normalized),"/",len(required))
+          print("Resposta JSON valida:",isinstance(result,dict))
+          PY
