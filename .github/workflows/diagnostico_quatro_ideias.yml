@@ -1,0 +1,76 @@
+name: Diagnostico isolado quatro ideias
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Cidb67/viralradar
+          token: ${{ secrets.PRIVATE_REPO_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Testar provedores e validador
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os, sys, types, logging, time, requests
+          from viral_dna_ideias import montar_prompt_ideias, validar_ideias
+          import viralradar_ia as ia
+          logging.basicConfig(level=logging.INFO)
+          sys.modules["streamlit"] = types.SimpleNamespace(secrets=os.environ)
+          evidencias = {"amostra": [
+              {"id": f"TESTE{i:06d}", "titulo": f"Documentario ficticio sobre historia e sociedade {i}",
+               "visualizacoes": 10000+i*3000, "views_dia_media": 100+i*20}
+              for i in range(1,16)]}
+          diagnostico = {"identidade_editorial": "Documentarios de historia e sociedade.",
+                         "padroes_titulos": "Series tematicas e perguntas.",
+                         "oportunidades": "Hipotese: adaptar temas ao contexto brasileiro."}
+          prompt = montar_prompt_ideias(evidencias, diagnostico)
+          original = requests.post
+          def observar(url, *args, **kwargs):
+              provedor = "Gemini" if "googleapis" in url else "Groq" if "groq.com" in url else "OpenRouter"
+              inicio = time.monotonic()
+              try:
+                  r = original(url, *args, **kwargs)
+              except requests.RequestException as exc:
+                  print(provedor, "falha de rede", type(exc).__name__, flush=True)
+                  raise
+              print(provedor, "HTTP", r.status_code, "segundos", round(time.monotonic()-inicio,2), flush=True)
+              if r.ok:
+                  try:
+                      d = r.json()
+                      escolha = (d.get("choices") or d.get("candidates") or [{}])[0]
+                      uso = d.get("usage") or d.get("usageMetadata") or {}
+                      print("finalizacao:", escolha.get("finish_reason", escolha.get("finishReason")), flush=True)
+                      print("uso:", {k:v for k,v in uso.items() if k in ("prompt_tokens","completion_tokens","total_tokens","cost","promptTokenCount","candidatesTokenCount","totalTokenCount","thoughtsTokenCount") and isinstance(v,(int,float))}, flush=True)
+                  except (ValueError, TypeError, KeyError, IndexError):
+                      print("Metadados indisponiveis", flush=True)
+              return r
+          requests.post = observar
+          def validar(texto):
+              try:
+                  return validar_ideias(texto, evidencias)
+              except ValueError as exc:
+                  print("Validador rejeitou:", str(exc), "caracteres:", len(texto or ""), flush=True)
+                  raise
+          for chave in ("GEMINI_API_KEY","GROQ_API_KEY","OPENROUTER_API_KEY"):
+              print(chave, "configurada" if os.environ.get(chave) else "ausente", flush=True)
+          try:
+              resultado, modelo = ia.gerar_validado(prompt, validar)
+              print("SUCESSO:", modelo, "ideias:", len(resultado), flush=True)
+          except ValueError as exc:
+              print("FALHA FINAL:", str(exc), flush=True)
+              sys.exit(1)
+          PY
