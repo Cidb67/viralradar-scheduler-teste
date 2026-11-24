@@ -1,0 +1,55 @@
+name: OpenRouter - Consumo roteiros e traducoes
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  medir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Medir roteiros e traducoes
+        run: |
+          python - <<'PY'
+          import os,json,time,urllib.request,urllib.error,re
+          key=os.environ.get("OPENROUTER_API_KEY")
+          if not key:
+              raise SystemExit("Secret ausente")
+          results=[]
+          def call(name,prompt,limit):
+              payload={"model":"openrouter/free","messages":[{"role":"user","content":prompt}],"max_tokens":limit,"temperature":0.2,"reasoning":{"effort":"low"}}
+              req=urllib.request.Request("https://openrouter.ai/api/v1/chat/completions",data=json.dumps(payload).encode(),headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"},method="POST")
+              start=time.monotonic()
+              row={"teste":name,"requisicoes":1}
+              output=""
+              try:
+                  with urllib.request.urlopen(req,timeout=150) as resp:
+                      data=json.load(resp)
+                  choice=data["choices"][0]
+                  output=choice["message"]["content"] or ""
+                  row.update(modelo=data.get("model"),usage=data.get("usage"),finish_reason=choice.get("finish_reason"),palavras=len(output.split()))
+              except urllib.error.HTTPError as e:
+                  row["erro"]="HTTP "+str(e.code)
+              except Exception as e:
+                  row["erro"]=type(e).__name__
+              row["segundos"]=round(time.monotonic()-start,2)
+              results.append(row)
+              print(json.dumps(row,ensure_ascii=False),flush=True)
+              return output
+          scripts={}
+          for minutes in (5,10,20):
+              words=minutes*140
+              scripts[minutes]=call("roteiro_"+str(minutes)+"min","Escreva roteiro original de narracao em portugues brasileiro sobre oceanos profundos, com gancho, desenvolvimento e conclusao. Aproximadamente "+str(words)+" palavras de narracao, sem instrucoes de cena. Nao invente fatos.",min(10000,words*3+2500))
+              n=len(scripts[minutes].split())
+              print("Meta de palavras:",words,"Obtidas:",n,"Dentro de 20%:",0.8*words<=n<=1.2*words,flush=True)
+          titles=["Buracos negros","Oceanos profundos","Vida em Marte","Energia solar","Memoria humana","Vulcoes","Dinossauros","Inteligencia animal","Viagem espacial","Sono","Auroras","Gravidade","Evolucao","Clima","Luas de Jupiter"]
+          call("titulos_EN_ES","Traduza estes 15 titulos para ingles e espanhol. Retorne JSON com 15 objetos, cada um com original, en, es: "+json.dumps(titles,ensure_ascii=False),2500)
+          if scripts[5] and results[0].get("finish_reason")=="stop":
+              for lang in ("ingles","espanhol"):
+                  call("traducao_roteiro_5min_"+lang,"Traduza integralmente para "+lang+", preservando todos os paragrafos e fatos. Retorne somente a traducao. Texto: "+scripts[5],5000)
+          else:
+              print("Traducoes de roteiro omitidas: roteiro base indisponivel ou incompleto.")
+          print("RESUMO:",json.dumps(results,ensure_ascii=False))
+          PY
