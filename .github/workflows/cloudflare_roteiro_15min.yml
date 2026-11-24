@@ -1,0 +1,78 @@
+name: Cloudflare AI - roteiro 15 minutos
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Validar roteiro em blocos e traducao
+        run: |
+          python - <<'PY'
+          import os, requests, json, time, re
+          account, token = os.environ['CF_ACCOUNT'], os.environ['CF_TOKEN']
+          assert account and token
+          total = 0.0
+          def call(prompt, limit):
+              global total
+              start = time.monotonic()
+              r = requests.post(f'https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/chat/completions', headers={'Authorization':'Bearer '+token}, json={'model':'@cf/openai/gpt-oss-120b','messages':[{'role':'user','content':prompt}],'max_tokens':limit,'reasoning_effort':'low'}, timeout=100)
+              print('HTTP',r.status_code,'segundos',round(time.monotonic()-start,2),flush=True)
+              if not r.ok:
+                  raise ValueError('HTTP '+str(r.status_code))
+              d=r.json()
+              usage=d.get('usage',{})
+              print('usage:',usage,flush=True)
+              total+=float(usage.get('neurons',0))
+              c=d['choices'][0]
+              print('finish:',c.get('finish_reason'),flush=True)
+              if c.get('finish_reason')!='stop':
+                  raise ValueError('Resposta incompleta')
+              raw=c['message'].get('content')
+              print('Tipo de content:',type(raw).__name__,flush=True)
+              if not isinstance(raw,str):
+                  raise ValueError('Content nao textual')
+              raw=re.sub(r'<think>.*?</think>','',raw,flags=re.S).strip()
+              raw=re.sub(r'^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$','',raw).strip()
+              return raw
+          parts=[]
+          valid=[]
+          topics=['Abertura e circulacao oceanica','Transporte de calor e efeitos no clima','Mudancas climaticas, impactos e conclusao']
+          for i,topic in enumerate(topics):
+              print('BLOCO',i+1,flush=True)
+              try:
+                  raw=call('Escreva em portugues brasileiro uma narracao documental sobre oceanos e clima. Parte '+str(i+1)+' de 3. Tema desta parte: '+topic+'. Escreva 7 paragrafos de aproximadamente 100 palavras cada, total 700 palavras. Somente texto narrado, sem JSON, titulos, marcadores ou notas de cena. Continue sem repetir o trecho anterior: '+(parts[-1][-1200:] if parts else 'inicio'),2500)
+                  n=len(raw.split())
+                  ok=560<=n<=840
+                  print('Palavras:',n,'PASSOU:',ok,flush=True)
+                  parts.append(raw)
+                  valid.append(ok)
+              except Exception as e:
+                  print('FALHA:',type(e).__name__,str(e)[:150],flush=True)
+                  valid.append(False)
+                  break
+          words=sum(len(p.split()) for p in parts)
+          script_ok=len(parts)==3 and all(valid) and 1680<=words<=2520
+          print('ROTEIRO TOTAL:',words,'palavras; minutos estimados:',round(words/140,2),'PASSOU:',script_ok,flush=True)
+          translation_ok=False
+          if parts:
+              try:
+                  raw=call('Traduza fielmente para ingles e espanhol o seguinte trecho. Retorne somente JSON com duas chaves en e es, ambas strings: '+parts[0][:900],1800)
+                  obj=json.loads(raw)
+                  translation_ok=all(isinstance(obj.get(k),str) and obj[k].strip() for k in ('en','es'))
+                  print('TRADUCAO PASSOU:',translation_ok,flush=True)
+              except Exception as e:
+                  print('FALHA TRADUCAO:',type(e).__name__,str(e)[:150],flush=True)
+          print('TOTAL NEURONS INFORMADOS:',round(total,2),flush=True)
+          if not (script_ok and translation_ok):
+              raise SystemExit(1)
+          PY
