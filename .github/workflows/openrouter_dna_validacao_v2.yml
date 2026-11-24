@@ -1,0 +1,48 @@
+name: OpenRouter - Validacao DNA v2
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Validar DNA completo
+        run: |
+          python - <<'PY'
+          import os,json,time,urllib.request,urllib.error
+          temas=["Buracos negros","Oceanos profundos","Vida em Marte","Energia solar","Memoria humana","Vulcoes","Dinossauros","Inteligencia animal","Viagem espacial","Sono","Auroras","Gravidade","Evolucao","Clima","Luas de Jupiter"]
+          videos=[{"titulo":t,"descricao":"Explicacao cientifica acessivel sobre "+t,"visualizacoes":12000+i*3100,"duracao_segundos":480+i*20} for i,t in enumerate(temas)]
+          campos=["publico","temas","padroes_de_titulos","ganchos","estrutura_narrativa","tom","oportunidades","limitacoes"]
+          prompt="Analise os 15 registros sinteticos abaixo. Retorne exclusivamente um objeto JSON com exatamente estas chaves: "+json.dumps(campos)+". Cada valor deve ser uma string em portugues com 2 a 3 frases especificas e uteis. Diferencie observacoes de hipoteses; nao invente dados ausentes. Registros: "+json.dumps(videos,ensure_ascii=False)
+          key=os.environ.get("OPENROUTER_API_KEY")
+          if not key:
+              raise SystemExit("Secret ausente")
+          payload={"model":"openrouter/free","messages":[{"role":"user","content":prompt}],"max_tokens":3500,"temperature":0.2,"reasoning":{"effort":"low"}}
+          req=urllib.request.Request("https://openrouter.ai/api/v1/chat/completions",data=json.dumps(payload).encode(),headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"},method="POST")
+          start=time.monotonic()
+          try:
+              with urllib.request.urlopen(req,timeout=150) as resp:
+                  data=json.load(resp)
+          except urllib.error.HTTPError as e:
+              raise SystemExit("HTTP "+str(e.code))
+          print(json.dumps({"modelo":data.get("model"),"requisicoes":1,"segundos":round(time.monotonic()-start,2),"usage":data.get("usage")},ensure_ascii=False))
+          choice=data["choices"][0]
+          print("finish_reason:",choice.get("finish_reason"))
+          raw=choice["message"]["content"].strip()
+          if raw.startswith("```"):
+              raw="\n".join(raw.splitlines()[1:-1])
+          obj=json.loads(raw)
+          if not isinstance(obj,dict):
+              raise SystemExit("JSON nao e objeto")
+          missing=[k for k in campos if not isinstance(obj.get(k),str) or not obj[k].strip()]
+          print("Campos validos:",len(campos)-len(missing),"/",len(campos))
+          print("Campos ausentes ou invalidos:",missing)
+          print("DNA sintetico:",json.dumps(obj,ensure_ascii=False,indent=2))
+          if missing or set(obj)!=set(campos) or choice.get("finish_reason")!="stop":
+              raise SystemExit("DNA reprovado")
+          print("DNA aprovado estruturalmente")
+          PY
