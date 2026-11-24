@@ -1,0 +1,52 @@
+name: Cloudflare AI - teste isolado
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Testar modelos gratuitos
+        run: |
+          python - <<'PY'
+          import os, requests, json, time, re
+          account, token = os.environ['CF_ACCOUNT'], os.environ['CF_TOKEN']
+          assert account and token, "Secrets ausentes"
+          models = ['@cf/meta/llama-3.3-70b-instruct-fp8-fast', '@cf/qwen/qwen3-30b-a3b-fp8']
+          tests = [
+              ('traducao', 'Traduza para inglês e espanhol: Como os oceanos regulam o clima da Terra. Retorne apenas JSON com chaves en e es.', 600),
+              ('roteiro', 'Escreva uma narração documental em português brasileiro sobre oceanos e clima, com 700 palavras (560 a 840), sem títulos, sem indicações de cena. Retorne apenas JSON com chave roteiro.', 3000),
+          ]
+          for model in models:
+              for name, prompt, limit in tests:
+                  start = time.monotonic()
+                  try:
+                      r = requests.post(f'https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{model}', headers={'Authorization': 'Bearer '+token}, json={'messages':[{'role':'user','content':prompt}], 'max_tokens':limit, 'temperature':0.2}, timeout=90)
+                      print(model, name, 'HTTP', r.status_code, 'segundos', round(time.monotonic()-start,2))
+                      d = r.json()
+                      if not r.ok or not d.get('success'):
+                          print('ERRO API', [e.get('code') for e in d.get('errors',[])])
+                          continue
+                      result = d.get('result',{})
+                      print('usage:', result.get('usage',{}))
+                      raw = result.get('response','')
+                      raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.S).strip()
+                      raw = re.sub(r'^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$', '', raw).strip()
+                      data = json.loads(raw)
+                      if name == 'roteiro':
+                          words = len(data['roteiro'].split())
+                          print('palavras:', words, 'PASSOU:', 560 <= words <= 840)
+                      else:
+                          print('PASSOU:', all(isinstance(data.get(k),str) and data[k].strip() for k in ('en','es')))
+                  except Exception as e:
+                      print('FALHA:', type(e).__name__)
+          PY
