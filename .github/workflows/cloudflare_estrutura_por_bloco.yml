@@ -1,0 +1,77 @@
+name: Cloudflare AI - estrutura por bloco
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Cidb67/viralradar
+          token: ${{ secrets.PRIVATE_REPO_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests streamlit
+      - name: Validar estrutura especifica de cada bloco
+        run: |
+          python - <<'PY'
+          import os, requests, time, re, json
+          import viralradar_ia as ia
+          import estudio_roteiros_independente as studio
+          account,token=os.environ['CF_ACCOUNT'],os.environ['CF_TOKEN']
+          assert account and token
+          model='@cf/openai/gpt-oss-120b'
+          total=0
+          calls=0
+          block=0
+          def gerar(prompt, validar, *args, **kwargs):
+              global total,calls,block
+              block+=1
+              schema={'titulo':'Titulo breve','gancho':'Gancho de cerca de 50 palavras' if block==1 else 'N/A','desenvolvimento':'Narracao em paragrafos, cerca de '+str(650 if block==1 else 600 if block==3 else 700)+' palavras','encerramento':'Conclusao de cerca de 70 palavras' if block==3 else 'N/A','chamada_acao':'Chamada de cerca de 30 palavras' if block==3 else 'N/A','cuidados_verificacao':'Notas breves de verificacao'}
+              extra='\nUse exatamente esta estrutura JSON para este bloco: '+json.dumps(schema,ensure_ascii=False)+'. Substitua as descricoes por texto original, mas copie literalmente cada N/A. Todos os valores devem ser strings. Total narrado entre 560 e 840 palavras, alvo 700. Sem notas de cena.'
+              for attempt in range(2):
+                  calls+=1
+                  start=time.monotonic()
+                  r=requests.post(f'https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/chat/completions',headers={'Authorization':'Bearer '+token},json={'model':model,'messages':[{'role':'user','content':prompt+extra}],'max_tokens':4000,'reasoning_effort':'low'},timeout=100)
+                  print('BLOCO',block,'TENTATIVA',attempt+1,'HTTP',r.status_code,'segundos',round(time.monotonic()-start,2),flush=True)
+                  if not r.ok: raise ValueError('HTTP '+str(r.status_code))
+                  d=r.json()
+                  usage=d.get('usage',{})
+                  total+=float(usage.get('neurons',0))
+                  print('usage:',usage,flush=True)
+                  c=d['choices'][0]
+                  raw=c['message'].get('content')
+                  try:
+                      if c.get('finish_reason')!='stop' or not isinstance(raw,str): raise ValueError('Resposta incompleta')
+                      raw=re.sub(r'<think>.*?</think>','',raw,flags=re.S).strip()
+                      parsed=studio.validar_roteiro(raw)
+                      counts={k:0 if parsed[k]=='N/A' else len(parsed[k].split()) for k in ('gancho','desenvolvimento','encerramento','chamada_acao')}
+                      print('PALAVRAS POR CAMPO:',counts,'TOTAL:',sum(counts.values()),flush=True)
+                      mismatches=[k for k in ('gancho','encerramento','chamada_acao') if (parsed[k]=='N/A')!=(schema[k]=='N/A')]
+                      print('CAMPOS INCOMPATIVEIS:',mismatches,flush=True)
+                      result=validar(raw)
+                      print('VALIDADOR REAL: APROVADO',flush=True)
+                      return result,model
+                  except ValueError as e:
+                      print('REJEITADO:',str(e),flush=True)
+                      if attempt==1: raise
+                      extra+='\nCorrija a tentativa anterior: '+str(e)+'. Respeite rigorosamente os N/A e o total narrado.'
+          ia.gerar_validado=gerar
+          try:
+              prompt=studio.criar_prompt_ideia('Como os oceanos regulam o clima','YouTube','Vídeo longo','Publico geral','Educativo')
+              roteiro=studio.gerar_roteiro_com_duracao(prompt,900,140,'','')
+              n=sum(len(roteiro[k].split()) for k in ('gancho','desenvolvimento','encerramento','chamada_acao'))
+              print('ROTEIRO COMPLETO:',n,'palavras; minutos:',round(n/140,2),flush=True)
+              assert 1680<=n<=2520
+              print('APROVADO',flush=True)
+          finally:
+              print('TOTAL NEURONS:',round(total,2),'CHAMADAS:',calls,flush=True)
+          PY
