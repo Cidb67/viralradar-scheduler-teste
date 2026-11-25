@@ -1,0 +1,53 @@
+name: Cloudflare - Klein formatos
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  imagens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests pillow
+      - name: Validar formatos nativos
+        run: |
+          python - <<'PY'
+          import os, requests, base64, time, io
+          from PIL import Image
+          from pathlib import Path
+          out=Path('imagens'); out.mkdir(exist_ok=True)
+          url='https://api.cloudflare.com/client/v4/accounts/'+os.environ['CF_ACCOUNT']+'/ai/run/@cf/black-forest-labs/flux-2-klein-4b'
+          total=0
+          for name,w,h in [('horizontal',1280,720),('vertical',720,1280),('quadrada',1024,1024)]:
+              start=time.monotonic()
+              r=requests.post(url,headers={'Authorization':'Bearer '+os.environ['CF_TOKEN']},files={k:(None,str(v)) for k,v in {'prompt':'Photorealistic cinematic Egyptian pyramids at sunrise, golden light, balanced composition, no text','width':w,'height':h}.items()},timeout=120)
+              print(name,'HTTP',r.status_code,'segundos',round(time.monotonic()-start,2),flush=True)
+              if not r.ok:
+                  print('Codigos:',[e.get('code') for e in r.json().get('errors',[])])
+                  raise SystemExit(1)
+              if r.headers.get('Content-Type','').startswith('image/'):
+                  raw=r.content
+                  print('Uso nao informado')
+              else:
+                  d=r.json()
+                  raw=base64.b64decode(d['result']['image'])
+                  usage=d.get('usage') or d['result'].get('usage') or {}
+                  print('Uso:',usage)
+                  total+=float(usage.get('neurons',0))
+              im=Image.open(io.BytesIO(raw)); im.load()
+              im.save(out/(name+'.png'))
+              print('SOLICITADO',w,h,'RECEBIDO',im.size,'FORMATO', 'EXATO' if im.size==(w,h) else 'DIFERENTE',flush=True)
+          print('Total neurons informados:',total)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: klein-formatos
+          path: imagens/*.png
+          retention-days: 3
