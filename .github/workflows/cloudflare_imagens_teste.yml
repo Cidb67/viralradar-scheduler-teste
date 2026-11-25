@@ -1,0 +1,58 @@
+name: Cloudflare - Teste de imagens
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  imagens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests pillow
+      - name: Gerar imagens
+        run: |
+          python - <<'PY'
+          import os, requests, base64, time, io
+          from PIL import Image
+          from pathlib import Path
+          out=Path('imagens'); out.mkdir(exist_ok=True)
+          prompts={
+            'cinematografica':'Photorealistic cinematic Egyptian pyramids at sunrise, wide composition, golden light',
+            'thumbnail':'YouTube thumbnail, dramatic Egyptian pyramid and surprised explorer, bold readable headline exactly "SEGREDOS DO EGITO"',
+            'instagram':'Photorealistic modern home office, laptop, coffee, plants, natural window light, premium editorial photography'
+          }
+          url='https://api.cloudflare.com/client/v4/accounts/'+os.environ['CF_ACCOUNT']+'/ai/run/@cf/black-forest-labs/flux-1-schnell'
+          for name,prompt in prompts.items():
+              start=time.monotonic()
+              try:
+                  r=requests.post(url,headers={'Authorization':'Bearer '+os.environ['CF_TOKEN']},json={'prompt':prompt,'steps':4},timeout=120)
+                  print(name,'HTTP',r.status_code,'segundos',round(time.monotonic()-start,2),flush=True)
+                  if not r.ok:
+                      print('Codigos:',[e.get('code') for e in r.json().get('errors',[])])
+                      break
+                  if r.headers.get('Content-Type','').startswith('image/'):
+                      raw=r.content
+                  else:
+                      d=r.json()
+                      raw=base64.b64decode(d['result']['image'])
+                      print('Uso:',d.get('usage') or d['result'].get('usage') or 'Nao informado')
+                  im=Image.open(io.BytesIO(raw)); im.load()
+                  im.save(out/(name+'.png'))
+                  print('APROVADO',name,im.size,'bytes',len(raw),flush=True)
+              except Exception as e:
+                  print('FALHA',type(e).__name__,flush=True)
+                  break
+          if len(list(out.glob('*.png')))!=3: raise SystemExit(1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cloudflare-imagens
+          path: imagens/*.png
+          retention-days: 3
