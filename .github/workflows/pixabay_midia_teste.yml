@@ -1,0 +1,67 @@
+name: Pixabay - Teste de imagens e videos
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  testar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Consultar midias sem baixar arquivos
+        run: |
+          python - <<'PY'
+          import os, time, requests
+          key=os.environ.get('PIXABAY_API_KEY')
+          if not key:
+              raise SystemExit('Secret ausente')
+          failures=0
+          for kind in ('image','video'):
+              for orientation in ('horizontal','vertical'):
+                  params={'key':key,'q':'Egypt pyramids','safesearch':'true','per_page':20}
+                  if kind=='image':
+                      params.update(image_type='photo',orientation=orientation)
+                  else:
+                      # Video endpoint has no orientation filter: classify returned dimensions.
+                      if orientation=='vertical':
+                          continue
+                      params.update(video_type='film')
+                  try:
+                      start=time.monotonic()
+                      r=requests.get('https://pixabay.com/api/'+('videos/' if kind=='video' else ''),params=params,timeout=30)
+                      print(kind,orientation if kind=='image' else 'all','HTTP',r.status_code,'seconds',round(time.monotonic()-start,2))
+                      print('Rate limit:',r.headers.get('X-RateLimit-Limit'),'Remaining:',r.headers.get('X-RateLimit-Remaining'))
+                      if not r.ok:
+                          failures+=1
+                          continue
+                      d=r.json()
+                      hits=d.get('hits',[])
+                      print('Total hits:',d.get('totalHits'),'Sample:',len(hits))
+                      groups={}
+                      for h in hits:
+                          v=h.get('videos',{}).get('medium',{}) if kind=='video' else {}
+                          w=v.get('width',h.get('imageWidth',0))
+                          height=v.get('height',h.get('imageHeight',0))
+                          if not w or not height:
+                              continue
+                          o='horizontal' if w>height else 'vertical' if height>w else 'square'
+                          groups.setdefault(o,[]).append((h,w,height))
+                      for o,items in groups.items():
+                          print('FORMAT',o,'COUNT',len(items))
+                          for h,w,height in items[:3]:
+                              print('ID',h.get('id'),'SIZE',w,height,'DURATION',h.get('duration','N/A'),'AUTHOR',h.get('user'),'SOURCE',h.get('pageURL'),'TAGS',h.get('tags'))
+                      if not hits:
+                          failures+=1
+                  except Exception as e:
+                      print('ERROR',type(e).__name__)
+                      failures+=1
+          print('API failures or empty searches:',failures)
+          if failures:
+              raise SystemExit(1)
+          PY
