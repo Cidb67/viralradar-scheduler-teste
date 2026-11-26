@@ -1,0 +1,44 @@
+name: Kokoro - Narracao PT-BR
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar motor CPU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y espeak-ng ffmpeg
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install kokoro==0.9.4 soundfile
+      - name: Gerar e validar vozes
+        run: |
+          mkdir -p resultado
+          /usr/bin/time -v python - <<'PY'
+          import time, numpy as np, soundfile as sf
+          from kokoro import KPipeline
+          texto = "No coração do deserto egípcio, as pirâmides de Gizé guardam histórias de uma civilização extraordinária. Construídas há milhares de anos, elas ainda impressionam pela precisão de suas formas e pela grandiosidade de sua arquitetura. Até hoje, pesquisadores estudam como os antigos egípcios conseguiram erguer monumentos tão impressionantes."
+          pipeline = KPipeline(lang_code='p', repo_id='hexgrad/Kokoro-82M', device='cpu')
+          for voz in ('pf_dora', 'pm_alex', 'pm_santa'):
+              inicio = time.monotonic()
+              partes = [audio.numpy() if hasattr(audio, 'numpy') else np.asarray(audio) for _, _, audio in pipeline(texto, voice=voz, speed=1.0)]
+              audio = np.concatenate(partes)
+              assert np.isfinite(audio).all() and np.max(np.abs(audio)) > 0.001
+              assert len(audio) > 24000 * 5
+              sf.write(f'resultado/{voz}.wav', audio, 24000)
+              print(voz, 'duracao', round(len(audio)/24000, 2), 'processamento', round(time.monotonic()-inicio, 2), flush=True)
+          PY
+          for f in resultado/*.wav; do
+            ffmpeg -v error -i "$f" -codec:a libmp3lame -q:a 2 "${f%.wav}.mp3"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-narracao-amostras
+          path: resultado/*.mp3
+          retention-days: 3
