@@ -1,0 +1,47 @@
+name: OpenCut Classic - Teste isolado
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: opencut-app/opencut-classic
+          ref: main
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - name: Identificar versao e licenca
+        run: |
+          git rev-parse HEAD
+          head -25 LICENSE
+          cat package.json
+          cat apps/web/package.json
+      - name: Instalar dependencias
+        run: bun install --frozen-lockfile
+      - name: Configurar ambiente local descartavel
+        run: |
+          cp apps/web/.env.example apps/web/.env.local
+          docker compose up -d db redis serverless-redis-http
+      - name: Iniciar editor e verificar HTTP
+        run: |
+          mkdir -p diagnostico
+          bun dev:web > diagnostico/editor.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -fsSL --max-time 10 http://localhost:3000/ -o diagnostico/home.html; then
+              echo "EDITOR HTTP OK"
+              exit 0
+            fi
+            sleep 5
+          done
+          tail -100 diagnostico/editor.log
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opencut-diagnostico
+          path: diagnostico/
+          retention-days: 3
