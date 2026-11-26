@@ -1,0 +1,91 @@
+name: Viral Video - Montagem 30 segundos
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  montagem:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests pillow
+      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+      - name: Montar cinco cenas
+        run: |
+          python - <<'PY'
+          import pathlib, tempfile, subprocess, json
+          from PIL import Image, ImageOps
+          from testes_audiovisual.motor_midias import MediaEngine
+          out=pathlib.Path('resultado'); out.mkdir(exist_ok=True)
+          roteiro="""Ao nascer do sol, as piramides dominam o horizonte.|No deserto de Giza, monumentos preservam marcas da historia.|Blocos de pedra revelam a escala da engenharia antiga.|Uma vista aerea mostra a disposicao do complexo.|O legado do Egito antigo continua a despertar curiosidade."""
+          textos=roteiro.split('|')
+          plano=[('ia','Cinematic sunrise over Giza pyramids, realistic documentary illustration, no text'),('image','Egypt pyramids'),('image','Giza pyramid stones'),('video','Egypt pyramids'),('ia','Cinematic sunset over ancient Egyptian pyramids, documentary illustration, no text')]
+          assert len(textos)==len(plano)==5
+          def run(args):
+              subprocess.run(['ffmpeg','-v','error','-y']+args,check=True,timeout=120)
+          with tempfile.TemporaryDirectory() as d:
+              root=pathlib.Path(d); m=MediaEngine(root/'cache.sqlite')
+              manifest=[]; used=set(); clips=[]
+              for i,((kind,q),texto) in enumerate(zip(plano,textos)):
+                  src=root/f'source{i}'; meta=None
+                  if kind!='ia':
+                      candidates=m.search(q,kind,'horizontal')
+                      if kind=='video':
+                          candidates=m.search(q,kind,'horizontal',providers=('wikimedia',))
+                          candidates=[x for x in candidates if 'Giza pyramid complex 3D flyover' in x.get('title','')]
+                      for item in candidates[:5]:
+                          if item['source'] in used: continue
+                          try:
+                              with m.http.get(item['url'],stream=True,timeout=60) as r:
+                                  r.raise_for_status(); n=0
+                                  with src.open('wb') as f:
+                                      for chunk in r.iter_content(65536):
+                                          n+=len(chunk)
+                                          if n>20*1024*1024: raise ValueError('Download limit')
+                                          f.write(chunk)
+                              if kind=='image':
+                                  with Image.open(src) as im:
+                                      im.load()
+                                      ImageOps.fit(im.convert('RGB'),(1280,720)).save(str(src)+'.jpg')
+                                  src=pathlib.Path(str(src)+'.jpg')
+                              else:
+                                  duration=float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','default=nw=1:nk=1',str(src)]))
+                                  if duration<6: continue
+                              meta={k:v for k,v in item.items() if k!='url'}; used.add(item['source']); break
+                          except Exception as e: print('MEDIA SKIP',type(e).__name__)
+                  if meta is None:
+                      im,meta=m.generate(q if kind=='ia' else 'Documentary illustration of '+q+', no text','horizontal')
+                      src=root/f'generated{i}.jpg'; im.save(src); kind='ia'
+                      meta['license']='AI generated; usage unverified'
+                  clip=root/f'clip{i}.mp4'
+                  args=['-stream_loop','-1','-i',str(src)] if kind=='video' else ['-loop','1','-framerate','25','-i',str(src)]
+                  run(args+['-t','6','-an','-vf','scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,fade=t=in:st=0:d=0.25,fade=t=out:st=5.75:d=0.25','-c:v','libx264','-threads','2','-pix_fmt','yuv420p',str(clip)])
+                  clips.append(clip)
+                  manifest.append(dict(scene=i+1,seconds=6,text=texto,kind=kind,media=meta,modifications='resize, framing, fades, excerpt if video'))
+                  print('SCENE',i+1,kind,meta.get('provider'),flush=True)
+              assert any(x['kind']=='video' for x in manifest), 'No real video selected'
+              assert any(x['kind']=='image' for x in manifest), 'No stock image selected'
+              listing=root/'concat.txt'; listing.write_text('\n'.join("file '"+str(p)+"'" for p in clips))
+              final=out/'viral-video-30s.mp4'
+              run(['-f','concat','-safe','0','-i',str(listing),'-c','copy','-movflags','+faststart',str(final)])
+              info=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_entries','stream=codec_name,width,height:format=duration','-of','json',str(final)]))
+              s=info['streams'][0]
+              assert (s['codec_name'],s['width'],s['height'])==('h264',1280,720)
+              assert abs(float(info['format']['duration'])-30)<.1
+              subprocess.run(['ffmpeg','-v','error','-xerror','-i',str(final),'-f','null','-'],check=True)
+              (out/'creditos.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+              print('APROVADO',info)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viral-video-30s
+          path: resultado/
+          retention-days: 1
