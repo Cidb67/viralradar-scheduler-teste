@@ -1,0 +1,105 @@
+name: OpenCut Classic - Navegador V6
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: opencut-app/opencut-classic
+          ref: main
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - name: Identificar versao e licenca
+        run: |
+          git rev-parse HEAD
+          head -25 LICENSE
+          cat package.json
+          cat apps/web/package.json
+      - name: Instalar dependencias
+        run: bun install --frozen-lockfile
+      - name: Configurar ambiente local descartavel
+        run: |
+          cp apps/web/.env.example apps/web/.env.local
+          docker compose up -d db redis serverless-redis-http
+      - name: Instalar navegador de teste
+        run: |
+          npm install --prefix /tmp/vr-browser playwright
+          /tmp/vr-browser/node_modules/.bin/playwright install --with-deps chromium
+      - name: Iniciar editor e verificar HTTP
+        run: |
+          mkdir -p diagnostico
+          bun dev:web > diagnostico/editor.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -fsSL --max-time 10 http://localhost:3000/ -o diagnostico/home.html; then
+              echo "EDITOR HTTP OK"
+              break
+            fi
+            sleep 5
+          done
+          test -s diagnostico/home.html
+          cat > /tmp/vr-browser/test.cjs <<'JS'
+          const {chromium}=require('playwright');
+          const fs=require('fs');
+          (async()=>{
+            const browser=await chromium.launch({headless:true,args:['--no-sandbox','--enable-unsafe-swiftshader']});
+            const page=await browser.newPage({viewport:{width:1440,height:900}});
+            const errors=[];
+            page.on('pageerror',e=>errors.push(e.message));
+            try {
+              await page.goto('http://localhost:3000/projects',{waitUntil:'domcontentloaded',timeout:90000});
+              const create=page.getByRole('button',{name:/^New project$|^New$/i}).first();
+              await create.waitFor({timeout:90000});
+              await page.screenshot({path:'diagnostico/projetos.png'});
+              await create.click({timeout:30000});
+              await page.waitForURL(/\/editor\/[^/]+/,{timeout:90000});
+              // O modal em Radix oferece botoes Next, Next e Finish.
+              // O teste V5 filtrou o dialog incorretamente. Usar os botoes visiveis.
+              await page.screenshot({path:'diagnostico/entrada-editor.png'});
+              const nextButton=page.getByRole('button',{name:'Next',exact:true});
+              const finishButton=page.getByRole('button',{name:'Finish',exact:true});
+              await page.waitForTimeout(800);
+              if(await nextButton.isVisible()){
+                await nextButton.click({timeout:15000});
+                await nextButton.click({timeout:15000});
+                await finishButton.click({timeout:15000});
+                console.log('ONBOARDING CONCLUIDO');
+              } else if(await page.getByRole('button',{name:/export/i}).first().isVisible()){
+                console.log('EDITOR SEM ONBOARDING');
+              } else {
+                await page.screenshot({path:'diagnostico/modal-nao-identificado.png'});
+                throw new Error('Nem Next nem Export visivel. Revisar captura');
+              }
+              await page.screenshot({path:'diagnostico/apos-introducao.png'});
+              console.log('URL EDITOR',page.url());
+              console.log('TEXTO EDITOR',(await page.locator('body').innerText()).slice(0,4500));
+              console.log('BOTOES EDITOR',JSON.stringify(await page.getByRole('button').allTextContents()).slice(0,3500));
+              await page.screenshot({path:'diagnostico/apos-introducao.png'});
+              await page.getByRole('button',{name:/export/i}).first().waitFor({timeout:30000});
+              await page.screenshot({path:'diagnostico/editor.png'});
+              console.log('PROJETO CRIADO E EDITOR ABERTO',page.url());
+              console.log((await page.locator('body').innerText()).slice(0,4000));
+              await page.reload({waitUntil:'domcontentloaded'});
+              const dialogs=page.getByRole('dialog');
+              if(await dialogs.count() && await dialogs.first().isVisible()) await page.keyboard.press('Escape');
+              await page.screenshot({path:'diagnostico/reaberto.png'});
+              await page.getByRole('button',{name:/export/i}).first().waitFor({timeout:30000});
+              console.log('PROJETO REABERTO');
+            } finally {
+              fs.writeFileSync('diagnostico/erros.json',JSON.stringify(errors,null,2));
+              await page.screenshot({path:'diagnostico/final.png'}).catch(()=>{});
+              await browser.close();
+            }
+          })().catch(e=>{console.error(e);process.exitCode=1});
+          JS
+          node /tmp/vr-browser/test.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opencut-navegador-v6
+          path: diagnostico/
+          retention-days: 3
