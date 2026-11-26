@@ -1,0 +1,40 @@
+name: Wikimedia - Teste de midias
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  consultar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Consultar imagens e videos sem downloads
+        run: |
+          python - <<'PY'
+          import requests, time, collections
+          s = requests.Session()
+          s.headers['User-Agent'] = 'ViralRadarMediaTest/1.0 (https://github.com/Cidb67/viralradar-scheduler-teste)'
+          for tipo, termo in [('imagem','Egypt pyramids filetype:bitmap'), ('video','Egypt pyramids filetype:video')]:
+              inicio = time.monotonic()
+              r = s.get('https://commons.wikimedia.org/w/api.php', params={'action':'query','generator':'search','gsrsearch':termo,'gsrnamespace':6,'gsrlimit':20,'prop':'imageinfo','iiprop':'url|size|mime|extmetadata','iiextmetadatafilter':'LicenseShortName|LicenseUrl|Artist|AttributionRequired|UsageTerms','format':'json','formatversion':2},timeout=40)
+              print(tipo, 'HTTP',r.status_code,'segundos',round(time.monotonic()-inicio,2))
+              r.raise_for_status()
+              data=r.json()
+              if 'error' in data: raise RuntimeError(data['error'])
+              counts=collections.Counter()
+              for p in data.get('query',{}).get('pages',[]):
+                  info=p.get('imageinfo',[{}])[0]
+                  w,h=info.get('width',0),info.get('height',0)
+                  fmt='horizontal' if w>h else 'vertical' if h>w else 'quadrado'
+                  meta=info.get('extmetadata',{})
+                  lic=meta.get('LicenseShortName',{}).get('value','desconhecida')
+                  counts[(fmt,lic)]+=1
+                  print(p['title'],w,h,info.get('mime'), 'licenca',lic,'URL',info.get('descriptionurl'),'licenca URL',meta.get('LicenseUrl',{}).get('value',''), 'autor informado',bool(meta.get('Artist',{}).get('value')))
+              print('AMOSTRA',sum(counts.values()),'FORMATOS E LICENCAS',dict(counts))
+              if not counts: print('SEM RESULTADOS: investigar termos e filtros')
+              time.sleep(1)
+          PY
