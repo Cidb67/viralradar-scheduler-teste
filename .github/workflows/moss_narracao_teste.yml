@@ -1,0 +1,44 @@
+name: Viral Narracao - MOSS CPU
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  narracao:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instalar motor isolado
+        run: |
+          git clone --depth 1 https://github.com/OpenMOSS/MOSS-TTS-Nano.git moss
+          cd moss
+          git rev-parse HEAD
+          pip install numpy sentencepiece onnxruntime huggingface_hub soundfile scipy requests
+          pip install torch==2.7.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers==4.57.1
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+      - name: Gerar e validar narracao
+        working-directory: moss
+        run: |
+          mkdir -p ../resultado
+          /usr/bin/time -v python infer_onnx.py --execution-provider cpu --cpu-threads 4 --disable-wetext-processing --voice Junhao --seed 42 --max-new-frames 900 --output-audio-path ../resultado/narracao.wav --text "No coração do deserto egípcio, as pirâmides de Gizé guardam histórias de uma civilização extraordinária. Construídas há milhares de anos, elas ainda impressionam pela precisão de suas formas e pela grandiosidade de sua arquitetura. Até hoje, pesquisadores estudam como os antigos egípcios conseguiram erguer monumentos tão impressionantes."
+          ffprobe -v error -show_entries stream=codec_name,sample_rate,channels:format=duration -of json ../resultado/narracao.wav
+          ffmpeg -v error -i ../resultado/narracao.wav -f null -
+          python - <<'PY'
+          import soundfile as sf
+          import numpy as np
+          a,sr=sf.read('../resultado/narracao.wav')
+          assert np.isfinite(a).all() and np.max(np.abs(a)) > 0.001
+          assert 5 < len(a)/sr < 90
+          print('APROVADO TECNICAMENTE: audio nao silencioso',len(a)/sr,'segundos')
+          PY
+          ffmpeg -v error -i ../resultado/narracao.wav ../resultado/narracao.mp3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moss-narracao-amostra
+          path: resultado/
+          retention-days: 2
