@@ -1,0 +1,81 @@
+name: Kokoro - Video sincronizado
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y espeak-ng ffmpeg
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install kokoro==0.9.4 soundfile requests pillow
+      - name: Narrar e sincronizar cinco cenas
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          mkdir -p resultado trabalho
+          python - <<'PY'
+          import os, time, subprocess as sp, requests, numpy as np, soundfile as sf
+          from kokoro import KPipeline
+          from PIL import Image, ImageOps
+          from io import BytesIO
+          import json
+          def run(*args):
+              sp.run(args, check=True)
+          cenas = [
+              ("No coração do deserto egípcio, as pirâmides de Gizé guardam histórias de uma civilização extraordinária.", "giza pyramids desert"),
+              ("Construídas há milhares de anos, elas ainda impressionam pela precisão de suas formas.", "egypt pyramid stones"),
+              ("A grandiosidade de sua arquitetura revela a habilidade dos antigos construtores.", "egypt sphinx"),
+              ("Até hoje, pesquisadores estudam como os antigos egípcios conseguiram erguer monumentos tão impressionantes.", "ancient egypt pyramids"),
+              ("Essas construções continuam despertando a curiosidade de pessoas em todo o mundo.", "pyramids sunset")
+          ]
+          pipeline = KPipeline(lang_code='p', repo_id='hexgrad/Kokoro-82M', device='cpu')
+          key = os.environ['PIXABAY_API_KEY']
+          assert key, 'Secret PIXABAY_API_KEY ausente'
+          fontes = []
+          usados = set()
+          total = 0
+          for i,(texto,q) in enumerate(cenas):
+              inicio = time.monotonic()
+              partes = [a.numpy() if hasattr(a,'numpy') else np.asarray(a) for _,_,a in pipeline(texto,voice='pm_alex',speed=0.95)]
+              audio = np.concatenate(partes)
+              assert np.isfinite(audio).all() and np.max(np.abs(audio)) > .001
+              audio = np.concatenate([audio,np.zeros(8400,dtype=audio.dtype)])
+              dur = len(audio)/24000
+              total += dur
+              sf.write(f'trabalho/{i}.wav',audio,24000)
+              r = requests.get('https://pixabay.com/api/',params={'key':key,'q':q,'image_type':'photo','orientation':'horizontal','safesearch':'true','per_page':10},timeout=30)
+              if r.status_code != 200: raise RuntimeError(f'Pixabay HTTP {r.status_code}')
+              hits = [h for h in r.json()['hits'] if h['id'] not in usados]
+              if not hits: raise RuntimeError('Sem imagem adequada')
+              h=hits[0]
+              usados.add(h['id'])
+              img=requests.get(h['largeImageURL'],timeout=30)
+              img.raise_for_status()
+              ImageOps.fit(Image.open(BytesIO(img.content)).convert('RGB'),(1280,720)).save(f'trabalho/{i}.jpg')
+              fontes.append({'cena':i+1,'autor':h['user'],'origem':h['pageURL'],'duracao':dur,'texto':texto})
+              run('ffmpeg','-v','error','-y','-loop','1','-framerate','25','-i',f'trabalho/{i}.jpg','-i',f'trabalho/{i}.wav','-af','loudnorm=I=-16:TP=-1.5:LRA=11','-c:v','libx264','-preset','fast','-pix_fmt','yuv420p','-c:a','aac','-ar','48000','-ac','2','-t',str(dur),f'trabalho/{i}.mp4')
+              print('CENA',i+1,'audio',round(dur,2),'processamento',round(time.monotonic()-inicio,2),flush=True)
+          with open('trabalho/lista.txt','w') as f:
+              for i in range(len(cenas)): f.write("file '"+str(i)+".mp4'\n")
+          run('ffmpeg','-v','error','-y','-f','concat','-safe','0','-i','trabalho/lista.txt','-c','copy','-movflags','+faststart','resultado/video_narrado.mp4')
+          info=json.loads(sp.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json','resultado/video_narrado.mp4']))
+          assert {s['codec_type'] for s in info['streams']} >= {'video','audio'}
+          assert abs(float(info['format']['duration'])-total)<0.5
+          run('ffmpeg','-v','error','-i','resultado/video_narrado.mp4','-f','null','-')
+          with open('resultado/fontes.json','w') as f: json.dump(fontes,f,ensure_ascii=False,indent=2)
+          print('APROVADO TECNICAMENTE',round(total,2),'segundos')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-video-sincronizado
+          path: resultado/
+          retention-days: 3
