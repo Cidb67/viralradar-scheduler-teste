@@ -1,0 +1,208 @@
+name: OpenCut Classic - Insercao de Texto V14
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: opencut-app/opencut-classic
+          ref: main
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - name: Identificar versao e licenca
+        run: |
+          git rev-parse HEAD
+          head -25 LICENSE
+          cat package.json
+          cat apps/web/package.json
+      - name: Instalar dependencias
+        run: bun install --frozen-lockfile
+      - name: Configurar ambiente local descartavel
+        run: |
+          cp apps/web/.env.example apps/web/.env.local
+          docker compose up -d db redis serverless-redis-http
+      - name: Instalar navegador de teste
+        run: |
+          npm install --prefix /tmp/vr-browser playwright
+          /tmp/vr-browser/node_modules/.bin/playwright install --with-deps chromium
+      - name: Instalar FFmpeg para gerar midias sinteticas
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+      - name: Iniciar editor e verificar HTTP
+        run: |
+          mkdir -p diagnostico /tmp/vr-media
+          ffmpeg -v error -f lavfi -i color=c=blue:s=640x360 -frames:v 1 -threads 1 /tmp/vr-media/vr-imagem.png
+          ffmpeg -v error -f lavfi -i testsrc2=size=640x360:rate=25 -t 3 -c:v libx264 -pix_fmt yuv420p /tmp/vr-media/vr-video.mp4
+          ffmpeg -v error -f lavfi -i sine=frequency=440:sample_rate=48000 -t 3 /tmp/vr-media/vr-audio.wav
+          bun dev:web > diagnostico/editor.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -fsSL --max-time 10 http://localhost:3000/ -o diagnostico/home.html; then
+              echo "EDITOR HTTP OK"
+              break
+            fi
+            sleep 5
+          done
+          test -s diagnostico/home.html
+          cat > /tmp/vr-browser/test.cjs <<'JS'
+          const {chromium}=require('playwright');
+          const fs=require('fs');
+          (async()=>{
+            const browser=await chromium.launch({headless:true,args:['--no-sandbox','--enable-unsafe-swiftshader']});
+            const page=await browser.newPage({viewport:{width:1440,height:900}});
+            const errors=[];
+            page.on('pageerror',e=>errors.push(e.message));
+            try {
+              await page.goto('http://localhost:3000/projects',{waitUntil:'domcontentloaded',timeout:90000});
+              const create=page.getByRole('button',{name:/^New project$|^New$/i}).first();
+              await create.waitFor({timeout:90000});
+              await page.screenshot({path:'diagnostico/projetos.png'});
+              await create.click({timeout:30000});
+              // Diagnosticar navegacao quando o projeto nao abre de primeira.
+              try {
+                await page.waitForURL(/\/editor\/[^/]+/,{waitUntil:'domcontentloaded',timeout:45000});
+              } catch(e) {
+                console.log('FALHA PRIMEIRA NAVEGACAO',page.url());
+                console.log('CORPO PROJETOS',(await page.locator('body').innerText()).slice(0,5500));
+                await page.screenshot({path:'diagnostico/projeto-nao-abriu.png'});
+                const projButtons=await page.getByRole('button').allTextContents();
+                console.log('BOTOES PROJETOS',JSON.stringify(projButtons).slice(0,3500));
+                const newAgain=page.getByRole('button',{name:/^New project$|^New$/i}).first();
+                if(await newAgain.count() && await newAgain.isVisible()) {
+                  await newAgain.click({timeout:15000});
+                  await page.waitForURL(/\/editor\/[^/]+/,{waitUntil:'domcontentloaded',timeout:45000});
+                  console.log('PROJETO ABERTO NA SEGUNDA TENTATIVA');
+                } else {
+                  throw e;
+                }
+              }
+              // O modal em Radix oferece botoes Next, Next e Finish.
+              // O teste V5 filtrou o dialog incorretamente. Usar os botoes visiveis.
+              await page.screenshot({path:'diagnostico/entrada-editor.png'});
+              const nextButton=page.getByRole('button',{name:'Next',exact:true});
+              const finishButton=page.getByRole('button',{name:'Finish',exact:true});
+              await page.waitForTimeout(800);
+              if(await nextButton.isVisible()){
+                await nextButton.click({timeout:15000});
+                await nextButton.click({timeout:15000});
+                await finishButton.click({timeout:15000});
+                console.log('ONBOARDING CONCLUIDO');
+              } else if(await page.getByRole('button',{name:/export/i}).first().isVisible()){
+                console.log('EDITOR SEM ONBOARDING');
+              } else {
+                await page.screenshot({path:'diagnostico/modal-nao-identificado.png'});
+                throw new Error('Nem Next nem Export visivel. Revisar captura');
+              }
+              await page.screenshot({path:'diagnostico/apos-introducao.png'});
+              console.log('URL EDITOR',page.url());
+              console.log('TEXTO EDITOR',(await page.locator('body').innerText()).slice(0,4500));
+              console.log('BOTOES EDITOR',JSON.stringify(await page.getByRole('button').allTextContents()).slice(0,3500));
+              await page.screenshot({path:'diagnostico/apos-introducao.png'});
+              await page.getByRole('button',{name:/export/i}).first().waitFor({timeout:30000});
+              await page.screenshot({path:'diagnostico/editor.png'});
+              console.log('PROJETO CRIADO E EDITOR ABERTO',page.url());
+              console.log((await page.locator('body').innerText()).slice(0,4000));
+              const media=['vr-imagem.png','vr-video.mp4','vr-audio.wav'];
+              for(const name of media){
+                const chooser=page.waitForEvent('filechooser',{timeout:15000});
+                await page.getByRole('button',{name:'Import',exact:true}).click();
+                await (await chooser).setFiles('/tmp/vr-media/'+name);
+                await page.getByText(name,{exact:false}).first().waitFor({timeout:30000});
+                console.log('MIDIA IMPORTADA',name);
+              }
+              await page.screenshot({path:'diagnostico/midias.png'});
+              // O botao '+' da thumbnail nao possui atributo title.
+              const imageCard=page.locator('[title="vr-imagem.png"]').first().locator('xpath=ancestor::div[contains(@class,"group")][1]');
+              await imageCard.hover();
+              console.log('BOTOES IMAGEM',await imageCard.locator('button').count());
+              await imageCard.locator('button').first().click({timeout:15000});
+              await page.waitForTimeout(800);
+              console.log('TIMELINE TEXTO',(await page.locator('body').innerText()).slice(-3500));
+              console.log('IMAGEM ADICIONADA TIMELINE');
+              await page.screenshot({path:'diagnostico/timeline.png'});
+              // Adicionar tambem o clipe de video e o audio de teste.
+              for(const name of ['vr-video.mp4','vr-audio.wav']){
+                const card=page.locator('[title="'+name+'"]').first().locator('xpath=ancestor::div[contains(@class,"group")][1]');
+                await card.hover();
+                await card.locator('button').first().click({timeout:15000});
+                console.log('ELEMENTO ADICIONADO TIMELINE',name);
+              }
+              await page.waitForTimeout(1200);
+              await page.screenshot({path:'diagnostico/timeline-video-audio.png'});
+              // Exigir que os tres nomes aparecam em ao menos dois locais: Asset e Timeline.
+              for(const name of media){
+                const count=await page.getByText(name,{exact:true}).count();
+                console.log('OCORRENCIAS NA INTERFACE',name,count);
+                if(count<2)throw new Error('Midia nao identificada na timeline: '+name);
+              }
+              // Diagnostico dos controles nativos de texto e legendas.
+              const controls=()=>page.locator('button,[role="tab"],[role="button"]').evaluateAll(els=>els.map(e=>({text:e.textContent.trim(),title:e.getAttribute('title'),aria:e.getAttribute('aria-label'),'data-state':e.getAttribute('data-state')})));
+              console.log('CONTROLES ANTES',JSON.stringify(await controls()));
+              const tab=page.locator('button,[role="tab"],[role="button"]').filter({hasText:/^Text$/i}).first();
+              const fallback=page.locator('[title="Text"],[aria-label="Text"]').first();
+              if(await tab.isVisible()) await tab.click();
+              else if(await fallback.isVisible()) await fallback.click();
+              else throw new Error('Controle Text nao localizado; consultar CONTROLES ANTES');
+              await page.waitForTimeout(1000);
+              console.log('PAINEL TEXTO',await page.locator('body').innerText());
+              console.log('CONTROLES TEXTO',JSON.stringify(await controls()));
+              await page.screenshot({path:'diagnostico/painel-texto.png'});
+              const target=page.getByText('Default text',{exact:true}).first();
+              await target.waitFor({state:'visible',timeout:15000});
+              console.log('DEFAULT TEXT HTML',await target.evaluate(e=>e.outerHTML.slice(0,3000)));
+              const before=await page.locator('body').innerText();
+              await target.click({timeout:15000});
+              await page.waitForTimeout(1200);
+              const after=await page.locator('body').innerText();
+              console.log('APOS CLICAR DEFAULT TEXT',after.slice(-5000));
+              console.log('NOVOS CAMPOS',JSON.stringify(await page.locator('input,textarea,[contenteditable="true"]').evaluateAll(els=>els.map(e=>({tag:e.tagName,placeholder:e.getAttribute('placeholder'),aria:e.getAttribute('aria-label'),value:e.value||e.textContent})))));
+              console.log('NOVOS CONTROLES',JSON.stringify(await controls()));
+              await page.screenshot({path:'diagnostico/default-text-clicado.png'});
+              const timelineTexts=await page.getByText('Default text',{exact:true}).count();
+              console.log('OCORRENCIAS DEFAULT TEXT',timelineTexts);
+              if(timelineTexts<2 && after===before) throw new Error('Click em Default text nao alterou interface');
+              console.log('INSERCAO TEXTO: interacao executada; verificar timeline e propriedades nos logs e screenshots');
+              // Exportar MP4 via o proprio navegador.
+              const downloadPromise=page.waitForEvent('download',{timeout:180000});
+              await page.getByRole('button',{name:'Export',exact:true}).first().click();
+              await page.getByRole('heading',{name:'Export project'}).waitFor({timeout:15000});
+              await page.getByRole('button',{name:'Export',exact:true}).last().click();
+              const download=await downloadPromise;
+              await download.saveAs('diagnostico/arquivo-exportado.mp4');
+              const size=fs.statSync('diagnostico/arquivo-exportado.mp4').size;
+              console.log('MP4 EXPORTADO',download.suggestedFilename(),size);
+              if(size<1000)throw new Error('MP4 vazio ou muito pequeno');
+              await page.reload({waitUntil:'domcontentloaded'});
+              const dialogs=page.getByRole('dialog');
+              if(await dialogs.count() && await dialogs.first().isVisible()) await page.keyboard.press('Escape');
+              await page.screenshot({path:'diagnostico/reaberto.png'});
+              await page.getByRole('button',{name:/export/i}).first().waitFor({timeout:30000});
+              for(const name of media){
+                await page.getByText(name,{exact:false}).first().waitFor({timeout:30000});
+                console.log('MIDIA RECUPERADA',name);
+              }
+              console.log('PROJETO REABERTO COM MIDIAS');
+              await page.screenshot({path:'diagnostico/timeline-recuperada.png'});
+            } finally {
+              fs.writeFileSync('diagnostico/erros.json',JSON.stringify(errors,null,2));
+              await page.screenshot({path:'diagnostico/final.png'}).catch(()=>{});
+              await browser.close();
+            }
+          })().catch(e=>{console.error(e);process.exitCode=1});
+          JS
+          node /tmp/vr-browser/test.cjs
+          ffprobe -v error -show_entries stream=codec_type,codec_name:format=duration,size -of default=noprint_wrappers=1 diagnostico/arquivo-exportado.mp4
+          test "$(ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 diagnostico/arquivo-exportado.mp4 | head -1)" = "audio"
+          echo "MP4 COM AUDIO CONFIRMADO"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opencut-insercao-texto-v14
+          path: diagnostico/
+          retention-days: 3
