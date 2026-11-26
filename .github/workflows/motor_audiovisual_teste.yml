@@ -1,0 +1,73 @@
+name: Motor audiovisual - Validacao integrada
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests pillow
+      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+      - name: Validar motor integrado
+        run: |
+          python - <<'PY'
+          import tempfile, pathlib, subprocess, json
+          from unittest.mock import patch
+          from testes_audiovisual.motor_midias import MediaEngine
+          with tempfile.TemporaryDirectory() as d:
+              root=pathlib.Path(d)
+              m=MediaEngine(root/'cache.sqlite')
+              prompt='Cinematic Egyptian pyramids at sunrise, no text'
+              im,meta=m.generate(prompt,'horizontal')
+              assert im.size==(1280,720)
+              print('IMAGE OK',meta)
+              original=m.http.post
+              def simulated(*args,**kwargs):
+                  if 'klein' in args[0]: raise RuntimeError('Simulated primary failure')
+                  return original(*args,**kwargs)
+              with patch.object(m.http,'post',side_effect=simulated):
+                  im,meta=m.generate(prompt,'vertical')
+              assert im.size==(720,1280) and meta['provider']=='schnell'
+              print('IMAGE FALLBACK OK',meta)
+              a=m.pixabay('Egypt pyramids','image','horizontal')
+              assert a
+              with patch.object(m.http,'get',side_effect=AssertionError('Cache missed')):
+                  assert m.pixabay('Egypt pyramids','image','horizontal')==a
+              print('PIXABAY CACHE OK',len(a))
+              with patch.object(m,'pixabay',side_effect=RuntimeError('Simulated failure')):
+                  b=m.search('Egypt pyramids','image','horizontal')
+              assert b and b[0]['provider']=='Wikimedia Commons'
+              print('SEARCH FALLBACK OK',len(b),b[0]['license'])
+              v=m.search('Egypt pyramids','video','horizontal',providers=('wikimedia',))
+              assert v
+              selected=next((x for x in v if 'Giza pyramid complex 3D flyover' in x.get('title','')),None)
+              assert selected, 'Known test video not found'
+              src=root/'source.webm'
+              with m.http.get(selected['url'],stream=True,timeout=60) as r:
+                  r.raise_for_status()
+                  n=0
+                  with src.open('wb') as f:
+                      for chunk in r.iter_content(65536):
+                          n+=len(chunk)
+                          if n>20*1024*1024: raise RuntimeError('Download limit')
+                          f.write(chunk)
+              dst=root/'video.mp4'
+              m.prepare_video(src,dst,'vertical')
+              p=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_entries','stream=codec_name,width,height:format=duration','-of','json',str(dst)]))
+              s=p['streams'][0]
+              assert (s['width'],s['height'],s['codec_name'])==(720,1280,'h264')
+              assert abs(float(p['format']['duration'])-5)<.2
+              subprocess.run(['ffmpeg','-v','error','-i',str(dst),'-f','null','-'],check=True)
+              print('VIDEO OK',p)
+              print('APROVADO: motor integrado')
+          PY
