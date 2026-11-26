@@ -1,0 +1,135 @@
+name: Viral Video - Legendas V3
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y espeak-ng ffmpeg fonts-dejavu-core
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install kokoro==0.9.4 soundfile requests pillow faster-whisper
+      - name: Gerar video em dois formatos
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          mkdir -p resultado trabalho
+          python - <<'PY'
+          import os, subprocess as sp, requests, numpy as np, soundfile as sf, json, textwrap
+          from kokoro import KPipeline
+          from PIL import Image, ImageOps
+          from io import BytesIO
+          def run(*a): sp.run(a,check=True)
+          cenas=[
+            ("No coração do deserto egípcio, as pirâmides de Gizé guardam histórias de uma civilização extraordinária.","giza pyramids desert"),
+            ("Construídas há milhares de anos, elas ainda impressionam pela precisão de suas formas.","egypt pyramids"),
+            ("A grandiosidade de sua arquitetura revela a habilidade dos antigos construtores.","giza sphinx"),
+            ("Até hoje, pesquisadores estudam como os antigos egípcios conseguiram erguer monumentos tão impressionantes.","giza pyramid"),
+            ("Essas construções continuam despertando a curiosidade de pessoas em todo o mundo.","egypt giza sunset")]
+          p=KPipeline(lang_code='p',repo_id='hexgrad/Kokoro-82M',device='cpu')
+          key=os.environ['PIXABAY_API_KEY']
+          assert key
+          from faster_whisper import WhisperModel
+          from PIL import ImageFont
+          import unicodedata, difflib
+          asr=WhisperModel('small',device='cpu',compute_type='int8',cpu_threads=4)
+          fontes=[]; usados=set()
+          for i,(texto,q) in enumerate(cenas):
+              a=np.concatenate([x.numpy() for _,_,x in p(texto,voice='pm_alex',speed=.95)])
+              assert np.isfinite(a).all() and np.max(np.abs(a))>.001
+              fala=len(a)/24000
+              frames=int(np.ceil((fala+.35)*25))
+              dur=frames/25
+              a=np.pad(a,(0,frames*960-len(a)))
+              sf.write(f'trabalho/{i}.wav',a,24000)
+              segs,_=asr.transcribe(f'trabalho/{i}.wav',language='pt',word_timestamps=True,beam_size=5,condition_on_previous_text=False)
+              words=[x for s in segs for x in (s.words or []) if x.word.strip()]
+              def norm(s):
+                  return ''.join(c for c in unicodedata.normalize('NFKD',s.lower()) if c.isalnum())
+              original=texto.split()
+              matcher=difflib.SequenceMatcher(None,[norm(x) for x in original],[norm(x.word) for x in words],autojunk=False)
+              if matcher.ratio()<.85: raise RuntimeError(f'Alinhamento insuficiente cena {i+1}: {matcher.ratio():.2f}')
+              tempos={}
+              for tag,a1,a2,b1,b2 in matcher.get_opcodes():
+                  if tag=='equal':
+                      for j,k in zip(range(a1,a2),range(b1,b2)): tempos[j]=(words[k].start,words[k].end)
+                  elif a2>a1:
+                      ini=words[b1].start if b1<len(words) else fala
+                      fim=words[b2-1].end if b2>b1 else ini
+                      if b2==b1:
+                          ini=words[b1-1].end if b1 else 0
+                          fim=words[b1].start if b1<len(words) else fala
+                      for j in range(a1,a2): tempos[j]=(ini+(fim-ini)*(j-a1)/(a2-a1),ini+(fim-ini)*(j-a1+1)/(a2-a1))
+              print('ALINHAMENTO',i+1,round(matcher.ratio(),3),flush=True)
+              r=requests.get('https://pixabay.com/api/',params=dict(key=key,q=q,image_type='photo',safesearch='true',per_page=40),timeout=30)
+              if r.status_code!=200: raise RuntimeError(f'Pixabay HTTP {r.status_code}')
+              candidatos=[]
+              for h in r.json()['hits']:
+                  tags=h['tags'].lower()
+                  if h['id'] in usados or any(t in tags for t in ('louvre','paris','france','mexico','population')): continue
+                  if not any(t in tags for t in ('egypt','giza','egyptian')): continue
+                  if not any(t in tags for t in ('pyramid','sphinx')): continue
+                  candidatos.append(h)
+              if not candidatos: raise RuntimeError(f'Nenhuma imagem contextual para cena {i+1}')
+              h=candidatos[0]; usados.add(h['id'])
+              r=requests.get(h['largeImageURL'],timeout=30); r.raise_for_status()
+              im=Image.open(BytesIO(r.content)).convert('RGB')
+              im.save(f'trabalho/{i}.jpg')
+              fontes.append(dict(cena=i+1,autor=h['user'],origem=h['pageURL'],tags=h['tags'],fala=fala,duracao=dur,texto=texto,frames=frames,tempos=[tempos[j] for j in range(len(original))]))
+              print('CENA',i+1,'duracao',dur,'tags',h['tags'],flush=True)
+          def stamp(t):
+              ms=round(t*1000); s,ms=divmod(ms,1000); m,s=divmod(s,60); h,m=divmod(m,60)
+              return f'{h:02}:{m:02}:{s:02},{ms:03}'
+          for nome,w,h in [('horizontal',1280,720),('vertical',720,1280)]:
+              offset=0; subs=[]
+              for i,c in enumerate(fontes):
+                  im=Image.open(f'trabalho/{i}.jpg')
+                  ImageOps.fit(im,(w*2,h*2)).save(f'trabalho/{nome}{i}.jpg')
+                  font=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',36 if nome=='vertical' else 40)
+                  tokens=c['texto'].split()
+                  j=0
+                  while j<len(tokens):
+                      k=min(j+4,len(tokens))
+                      while k>j+1 and font.getlength(' '.join(tokens[j:k]))>w*.84: k-=1
+                      g=' '.join(tokens[j:k])
+                      assert font.getlength(g)<=w*.84
+                      ini=offset+max(0,c['tempos'][j][0])
+                      fim=offset+min(c['fala'],c['tempos'][k-1][1])
+                      if fim>ini: subs.append((ini,fim,g))
+                      j=k
+                  offset+=c['duracao']
+                  vf=f"zoompan=z='min(1+on*0.0006,1.10)':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d={c['frames']}:s={w}x{h}:fps=25,fade=t=in:d=0.18,fade=t=out:st={max(0,c['duracao']-.18)}:d=0.18"
+                  run('ffmpeg','-v','error','-y','-i',f'trabalho/{nome}{i}.jpg','-i',f'trabalho/{i}.wav','-vf',vf,'-af','loudnorm=I=-16:TP=-1.5:LRA=11','-c:v','libx264','-preset','fast','-pix_fmt','yuv420p','-c:a','aac','-ar','48000','-ac','2','-t',str(c['duracao']),f'trabalho/{nome}{i}.mp4')
+              with open('trabalho/lista.txt','w') as f:
+                  for i in range(len(fontes)): f.write(f"file '{nome}{i}.mp4'\n")
+              srt=f'resultado/{nome}.srt'
+              with open(srt,'w') as f:
+                  for j,(ini,fim,g) in enumerate(subs,1): f.write(f'{j}\n{stamp(ini)} --> {stamp(fim)}\n{g}\n\n')
+              ass=f'trabalho/{nome}.ass'
+              def ast(t): return stamp(t).replace(',', '.')[:-1]
+              with open(ass,'w') as f:
+                  f.write(f'[Script Info]\nScriptType: v4.00+\nPlayResX: {w}\nPlayResY: {h}\nWrapStyle: 2\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,DejaVu Sans,{36 if nome=="vertical" else 40},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,2,50,50,{260 if nome=="vertical" else 65},1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n')
+                  for ini,fim,g in subs: f.write(f'Dialogue: 0,{ast(ini)},{ast(fim)},Default,,0,0,0,,{g}\n')
+              run('ffmpeg','-v','error','-y','-f','concat','-safe','0','-i','trabalho/lista.txt','-vf',f'ass={ass}','-c:v','libx264','-preset','fast','-c:a','copy','-movflags','+faststart',f'resultado/{nome}.mp4')
+              info=json.loads(sp.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',f'resultado/{nome}.mp4']))
+              v=next(s for s in info['streams'] if s['codec_type']=='video')
+              assert (v['width'],v['height'])==(w,h)
+              assert any(s['codec_type']=='audio' for s in info['streams'])
+              assert abs(float(info['format']['duration'])-offset)<.5
+              run('ffmpeg','-v','error','-i',f'resultado/{nome}.mp4','-f','null','-')
+              print('APROVADO',nome,w,h,offset,flush=True)
+          with open('resultado/fontes.json','w') as f: json.dump(fontes,f,ensure_ascii=False,indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viral-video-legendas-v3
+          path: resultado/
+          retention-days: 3
